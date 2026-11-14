@@ -454,6 +454,8 @@ public sealed class BookingTests : IAsyncLifetime
         var creation = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings").GetProperty("post");
         var mine = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings/my").GetProperty("get");
         var cancellation = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings/{id}").GetProperty("delete");
+        var adminList = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/bookings").GetProperty("get");
+        var adminCancellation = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/bookings/{id}").GetProperty("delete");
 
         Assert.True(creation.GetProperty("responses").TryGetProperty("201", out _));
         Assert.True(creation.GetProperty("responses").TryGetProperty("409", out _));
@@ -462,6 +464,11 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(cancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(cancellation.GetProperty("responses").TryGetProperty("200", out _));
         Assert.True(cancellation.GetProperty("responses").TryGetProperty("409", out _));
+        Assert.True(adminList.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(adminCancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(adminCancellation.GetProperty("responses").TryGetProperty("409", out _));
+        Assert.Equal(new[] { "date", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
+            .EnumerateArray().Select(parameter => parameter.GetProperty("name").GetString()).Order().ToArray());
         var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("CreateBookingRequest");
         Assert.True(!requestSchema.TryGetProperty("additionalProperties", out var additional) || additional.ValueKind == JsonValueKind.True);
     }
@@ -539,11 +546,16 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal("cancelled", rows[0].Status);
     }
 
-    [Fact]
-    public async Task ConcurrentCancellationSucceedsOnlyOnce()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentCancellationSucceedsOnlyOnce(bool asAdmin)
     {
         using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
         var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        if (asAdmin)
+            await LoginAsAdminAsync();
+        var path = $"/api/{(asAdmin ? "admin/" : "")}bookings/{created.Id}";
         var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var arrivals = 0;
         commands.BeforeCancellation = async cancellationToken =>
@@ -553,7 +565,7 @@ public sealed class BookingTests : IAsyncLifetime
             await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         };
 
-        var responses = await Task.WhenAll(client.DeleteAsync($"/api/bookings/{created.Id}"), client.DeleteAsync($"/api/bookings/{created.Id}"));
+        var responses = await Task.WhenAll(client.DeleteAsync(path), client.DeleteAsync(path));
         var statuses = responses.Select(response => response.StatusCode).ToArray();
         var errors = new List<string>();
         foreach (var response in responses)
@@ -620,6 +632,168 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal("UNAUTHORIZED", error!.Code);
         Assert.Equal("active", saved.Status);
+    }
+
+    [Theory]
+    [InlineData("", "0,1,2,3")]
+    [InlineData("date=2000-01-01", "0")]
+    [InlineData("date={date}", "1,2,3")]
+    [InlineData("roomId={room}", "0,1,2,3")]
+    [InlineData("userId={owner}", "0,1,2")]
+    [InlineData("userId={other}", "3")]
+    [InlineData("status=active", "0,2,3")]
+    [InlineData("status=cancelled", "1")]
+    [InlineData("date={date}&roomId={room}&userId={owner}&status=active", "2")]
+    [InlineData("roomId=2147483647", "")]
+    [InlineData("userId=2147483647", "")]
+    public async Task AdminListAppliesFiltersAndReturnsCurrentNames(string filter, string expected)
+    {
+        var other = await AddUserAsync();
+        await using var db = CreateDbContext();
+        var rows = new[]
+        {
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = new(2000, 1, 1), StartTime = new(9, 0), EndTime = new(10, 0), Status = "active" },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(10, 0), EndTime = new(11, 0), Status = "cancelled" },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(10, 0), EndTime = new(11, 0), Status = "active", Comment = "admin history" },
+            new Booking { UserId = other.Id, RoomId = room.Id, Date = date, StartTime = new(11, 0), EndTime = new(12, 0), Status = "active" }
+        };
+        db.Bookings.AddRange(rows.Reverse());
+        await db.SaveChangesAsync();
+        await db.Rooms.Where(item => item.Id == room.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Name, "renamed_" + suffix));
+        await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.DisplayName, "Renamed Owner"));
+        await LoginAsAdminAsync();
+        filter = filter.Replace("{date}", DateText).Replace("{room}", room.Id.ToString(CultureInfo.InvariantCulture))
+            .Replace("{owner}", user.Id.ToString(CultureInfo.InvariantCulture)).Replace("{other}", other.Id.ToString(CultureInfo.InvariantCulture));
+        var expectedIds = expected.Length == 0 ? [] : expected.Split(',').Select(index => rows[int.Parse(index)])
+            .OrderBy(item => item.Date).ThenBy(item => item.StartTime).ThenBy(item => item.Id).Select(item => item.Id).ToArray();
+        commands.BookingReads = 0;
+
+        var result = (await client.GetFromJsonAsync<BookingResponse[]>("/api/admin/bookings?" + filter))!;
+        var ownRows = result.Where(item => item.RoomId == room.Id).ToArray();
+        var reads = commands.BookingReads;
+
+        Assert.Equal(expectedIds, ownRows.Select(item => item.Id));
+        Assert.All(ownRows, item => Assert.Equal("renamed_" + suffix, item.RoomName));
+        Assert.All(ownRows.Where(item => item.UserId == user.Id), item => Assert.Equal("Renamed Owner", item.UserDisplayName));
+        Assert.Equal(result.OrderBy(item => item.Date).ThenBy(item => item.StartTime).ThenBy(item => item.Id), result);
+        if (expected.Length == 0)
+            Assert.Empty(result);
+        Assert.Equal(1, reads);
+    }
+
+    [Theory]
+    [InlineData("date=")]
+    [InlineData("date=2035-02-29")]
+    [InlineData("date=2035-1-01")]
+    [InlineData("date=2035-01-01T00:00:00")]
+    [InlineData("roomId=0")]
+    [InlineData("roomId=-1")]
+    [InlineData("roomId=abc")]
+    [InlineData("roomId=2147483648")]
+    [InlineData("userId=0")]
+    [InlineData("userId=-1")]
+    [InlineData("userId=abc")]
+    [InlineData("status=")]
+    [InlineData("status=Active")]
+    [InlineData("status=unknown")]
+    public async Task AdminListRejectsInvalidFilters(string filter)
+    {
+        await LoginAsAdminAsync();
+
+        using var response = await client.GetAsync("/api/admin/bookings?" + filter);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdminRoutesRejectStudentAndAnonymous(bool anonymous)
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        if (anonymous)
+            client.DefaultRequestHeaders.Authorization = null;
+
+        using var list = await client.GetAsync("/api/admin/bookings");
+        using var cancellation = await client.DeleteAsync($"/api/admin/bookings/{created.Id}");
+        await using var db = CreateDbContext();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == created.Id);
+
+        Assert.Equal(anonymous ? HttpStatusCode.Unauthorized : HttpStatusCode.Forbidden, list.StatusCode);
+        Assert.Equal(anonymous ? HttpStatusCode.Unauthorized : HttpStatusCode.Forbidden, cancellation.StatusCode);
+        Assert.Equal("active", saved.Status);
+    }
+
+    [Fact]
+    public async Task AdminCancellationPreservesOwnerAndReleasesTime()
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        var admin = await LoginAsAdminAsync();
+
+        using var response = await client.DeleteAsync($"/api/admin/bookings/{created.Id}");
+        var body = await response.Content.ReadFromJsonAsync<BookingCancellationResponse>();
+        var history = await client.GetFromJsonAsync<BookingResponse[]>($"/api/admin/bookings?userId={user.Id}&status=cancelled");
+        var free = await client.GetFromJsonAsync<RoomFreeSlotsResponse>($"/api/rooms/{room.Id}/free-slots?date={DateText}");
+        using var repeated = await client.DeleteAsync($"/api/admin/bookings/{created.Id}");
+        var error = await repeated.Content.ReadFromJsonAsync<ApiError>();
+        await LoginAsync();
+        using var replacement = await client.PostAsJsonAsync("/api/bookings", Request());
+
+        Assert.NotEqual(user.Id, admin.Id);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(new BookingCancellationResponse(created.Id, "cancelled"), body);
+        Assert.Equal(created with { Status = "cancelled" }, Assert.Single(history!));
+        Assert.Equal([new FreeSlotResponse("09:00", "18:00")], free!.FreeSlots);
+        Assert.Equal(HttpStatusCode.Conflict, repeated.StatusCode);
+        Assert.Equal("ALREADY_CANCELLED", error!.Code);
+        Assert.Equal(HttpStatusCode.Created, replacement.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("0", HttpStatusCode.NotFound, "BOOKING_NOT_FOUND")]
+    [InlineData("-1", HttpStatusCode.NotFound, "BOOKING_NOT_FOUND")]
+    [InlineData("2147483647", HttpStatusCode.NotFound, "BOOKING_NOT_FOUND")]
+    [InlineData("text", HttpStatusCode.BadRequest, "VALIDATION_ERROR")]
+    public async Task AdminCancellationRejectsInvalidId(string id, HttpStatusCode status, string code)
+    {
+        await LoginAsAdminAsync();
+
+        using var response = await client.DeleteAsync("/api/admin/bookings/" + id);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(status, response.StatusCode);
+        Assert.Equal(code, error!.Code);
+    }
+
+    [Fact]
+    public async Task DeletedAdminCannotReadOrCancelBookings()
+    {
+        var admin = await LoginAsAdminAsync();
+        await using var db = CreateDbContext();
+        await db.RefreshTokens.Where(token => token.UserId == admin.Id).ExecuteDeleteAsync();
+        await db.Users.Where(item => item.Id == admin.Id).ExecuteDeleteAsync();
+
+        using var list = await client.GetAsync("/api/admin/bookings");
+        using var cancellation = await client.DeleteAsync("/api/admin/bookings/0");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, list.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, cancellation.StatusCode);
+    }
+
+    private async Task<User> LoginAsAdminAsync()
+    {
+        var admin = await AddUserAsync();
+        await using var db = CreateDbContext();
+        await db.Users.Where(item => item.Id == admin.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        using var response = await client.PostAsJsonAsync("/api/auth/login", new { login = admin.Login, password = "password" });
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<AuthResponse>();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", result!.Token);
+        return admin;
     }
 
     private Dictionary<string, object?> Request() => new()

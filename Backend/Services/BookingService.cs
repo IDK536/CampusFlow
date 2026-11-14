@@ -12,12 +12,12 @@ public sealed record BookingCreationResult(BookingResponse? Booking, string? Err
 
 public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
 {
-    public async Task<string?> CancelAsync(int userId, int bookingId, CancellationToken cancellationToken)
+    public async Task<string?> CancelAsync(int userId, int bookingId, CancellationToken cancellationToken, bool asAdmin = false)
     {
         if (!await db.Users.AnyAsync(user => user.Id == userId, cancellationToken))
             return "UNAUTHORIZED";
         var updated = await db.Bookings
-            .Where(booking => booking.Id == bookingId && booking.UserId == userId && booking.Status == "active")
+            .Where(booking => booking.Id == bookingId && (asAdmin || booking.UserId == userId) && booking.Status == "active")
             .ExecuteUpdateAsync(update => update.SetProperty(booking => booking.Status, "cancelled"), cancellationToken);
         if (updated == 1)
             return null;
@@ -25,7 +25,7 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
             .Select(booking => new { booking.UserId }).SingleOrDefaultAsync(cancellationToken);
         if (booking is null)
             return "BOOKING_NOT_FOUND";
-        if (booking.UserId != userId)
+        if (!asAdmin && booking.UserId != userId)
             return "FORBIDDEN";
         return "ALREADY_CANCELLED";
     }
@@ -82,7 +82,29 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
     {
         if (!await db.Users.AnyAsync(user => user.Id == userId, cancellationToken))
             return null;
-        var query = db.Bookings.AsNoTracking().Where(booking => booking.UserId == userId);
+        return await ReadAsync(new AdminBookingsQuery { UserId = userId, Status = status }, cancellationToken);
+    }
+
+    public async Task<BookingResponse[]?> GetAllAsync(int adminId, AdminBookingsQuery filters, CancellationToken cancellationToken)
+    {
+        if (!await db.Users.AnyAsync(user => user.Id == adminId, cancellationToken))
+            return null;
+        return await ReadAsync(filters, cancellationToken);
+    }
+
+    private async Task<BookingResponse[]> ReadAsync(AdminBookingsQuery filters, CancellationToken cancellationToken)
+    {
+        var query = db.Bookings.AsNoTracking();
+        if (filters.UserId is not null)
+            query = query.Where(booking => booking.UserId == filters.UserId);
+        if (filters.RoomId is not null)
+            query = query.Where(booking => booking.RoomId == filters.RoomId);
+        if (filters.Date is not null)
+        {
+            var date = DateOnly.ParseExact(filters.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            query = query.Where(booking => booking.Date == date);
+        }
+        var status = filters.Status;
         if (status is not null)
             query = query.Where(booking => booking.Status == status);
         var bookings = await (from booking in query

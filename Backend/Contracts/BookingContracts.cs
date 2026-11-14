@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using CampusFlow.Api.Validation;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json.Serialization;
@@ -58,3 +59,30 @@ public sealed record BookingResponse(int Id, int RoomId, string RoomName, int Us
     string Date, string StartTime, string EndTime, string Status, string? Comment);
 
 public sealed record BookingCancellationResponse(int Id, string Status);
+
+public sealed class AdminBookingsQuery : IValidatableObject
+{
+    [FromQuery(Name = "date")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Date { get; init; }
+
+    [FromQuery(Name = "roomId")]
+    [Range(1, int.MaxValue)]
+    public int? RoomId { get; init; }
+
+    [FromQuery(Name = "userId")]
+    [Range(1, int.MaxValue)]
+    public int? UserId { get; init; }
+
+    [FromQuery(Name = "status")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Status { get; init; }
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (Date is not null && !DateOnly.TryParseExact(Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+            yield return new ValidationResult("Дата должна иметь формат YYYY-MM-DD", [nameof(Date)]);
+        if (Status is not null && Status is not ("active" or "cancelled"))
+            yield return new ValidationResult("Статус должен быть active или cancelled", [nameof(Status)]);
+    }
+}
