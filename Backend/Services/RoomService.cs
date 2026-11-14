@@ -11,6 +11,20 @@ public sealed record RoomWriteResult(RoomResponse? Room, string? ErrorCode = nul
 
 public sealed class RoomService(CampusFlowDbContext db)
 {
+    public async Task<string?> DeleteAsync(int id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deleted = await db.Rooms.Where(room => room.Id == id).ExecuteDeleteAsync(cancellationToken);
+            return deleted == 0 ? "ROOM_NOT_FOUND" : null;
+        }
+        catch (PostgresException exception) when (exception is
+            { SqlState: PostgresErrorCodes.ForeignKeyViolation or PostgresErrorCodes.RestrictViolation, ConstraintName: "FK_Bookings_Rooms_RoomId" })
+        {
+            return "ROOM_HAS_BOOKINGS";
+        }
+    }
+
     public async Task<RoomWriteResult> SaveAsync(int? id, RoomWriteRequest request, CancellationToken cancellationToken)
     {
         if (id is <= 0)

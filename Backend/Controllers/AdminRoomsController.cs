@@ -13,6 +13,22 @@ namespace CampusFlow.Api.Controllers;
 [ProducesResponseType(404)]
 public sealed class AdminRoomsController(RoomService rooms) : ControllerBase
 {
+    [HttpDelete("{id}")]
+    [ProducesResponseType(204)]
+    [ProducesResponseType<ApiError>(404)]
+    [ProducesResponseType<ApiError>(409)]
+    public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
+    {
+        var error = await rooms.DeleteAsync(id, cancellationToken);
+        return error switch
+        {
+            null => NoContent(),
+            "ROOM_NOT_FOUND" => NotFound(new ApiError("ROOM_NOT_FOUND", "Аудитория не найдена", new { roomId = id })),
+            "ROOM_HAS_BOOKINGS" => Conflict(new ApiError("ROOM_HAS_BOOKINGS", "Нельзя удалить аудиторию с историей бронирований", new { roomId = id })),
+            _ => throw new InvalidOperationException("Unknown room deletion result.")
+        };
+    }
+
     [HttpPost]
     [Consumes("application/json")]
     [ProducesResponseType<RoomResponse>(201)]

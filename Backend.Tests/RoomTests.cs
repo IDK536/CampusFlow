@@ -91,12 +91,12 @@ public sealed class RoomTests : IAsyncLifetime
             return;
         await using var db = CreateDbContext();
         await using var transaction = await db.Database.BeginTransactionAsync();
-        var userIds = db.Users.Where(item => item.Login == "rooms_" + suffix).Select(item => item.Id);
+        var userIds = db.Users.Where(item => item.Login == "rooms_" + suffix || item.Login.StartsWith("rooms_" + suffix + "_")).Select(item => item.Id);
         await db.RefreshTokens.Where(token => userIds.Contains(token.UserId)).ExecuteDeleteAsync();
         await db.Bookings.Where(booking => userIds.Contains(booking.UserId)).ExecuteDeleteAsync();
         var roomIds = rooms.Select(room => room.Id).ToArray();
         await db.Rooms.Where(room => roomIds.Contains(room.Id) || room.Name.StartsWith(suffix + "_")).ExecuteDeleteAsync();
-        await db.Users.Where(item => item.Login == "rooms_" + suffix).ExecuteDeleteAsync();
+        await db.Users.Where(item => item.Login == "rooms_" + suffix || item.Login.StartsWith("rooms_" + suffix + "_")).ExecuteDeleteAsync();
         await transaction.CommitAsync();
     }
 
@@ -490,15 +490,19 @@ public sealed class RoomTests : IAsyncLifetime
     [InlineData("-1", HttpStatusCode.NotFound)]
     [InlineData("2147483647", HttpStatusCode.NotFound)]
     [InlineData("text", HttpStatusCode.BadRequest)]
-    public async Task AdminUpdateRejectsMissingOrInvalidId(string id, HttpStatusCode status)
+    public async Task AdminUpdateAndDeleteRejectMissingOrInvalidId(string id, HttpStatusCode status)
     {
         await LoginAsAdminAsync();
 
         using var response = await client.PutAsJsonAsync("/api/admin/rooms/" + id, WriteRequest());
         var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        using var deletion = await client.DeleteAsync("/api/admin/rooms/" + id);
+        var deletionError = await deletion.Content.ReadFromJsonAsync<ApiError>();
 
         Assert.Equal(status, response.StatusCode);
         Assert.Equal(status == HttpStatusCode.NotFound ? "ROOM_NOT_FOUND" : "VALIDATION_ERROR", error!.Code);
+        Assert.Equal(status, deletion.StatusCode);
+        Assert.Equal(status == HttpStatusCode.NotFound ? "ROOM_NOT_FOUND" : "VALIDATION_ERROR", deletionError!.Code);
     }
 
     [Fact]
@@ -516,6 +520,125 @@ public sealed class RoomTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal("ROOM_NOT_FOUND", error!.Code);
+    }
+
+    [Fact]
+    public async Task AdminDeletesRoomWithoutBookingsAndRepeatedDeletionReturnsNotFound()
+    {
+        await LoginAsAdminAsync();
+        var roomId = rooms[1].Id;
+
+        using var response = await client.DeleteAsync($"/api/admin/rooms/{roomId}");
+        var body = await response.Content.ReadAsStringAsync();
+        using var card = await client.GetAsync($"/api/rooms/{roomId}");
+        using var slots = await client.GetAsync($"/api/rooms/{roomId}/free-slots?date={DateText}");
+        var search = await client.GetFromJsonAsync<AvailableRoomsResponse>($"/api/rooms?date={DateText}");
+        using var repeated = await client.DeleteAsync($"/api/admin/rooms/{roomId}");
+        var error = await repeated.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var exists = await db.Rooms.AnyAsync(room => room.Id == roomId);
+        var otherRooms = await db.Rooms.CountAsync(room => rooms.Select(item => item.Id).Contains(room.Id));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Empty(body);
+        Assert.Equal(HttpStatusCode.NotFound, card.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, slots.StatusCode);
+        Assert.DoesNotContain(search!.Rooms, room => room.Id == roomId);
+        Assert.Equal(HttpStatusCode.NotFound, repeated.StatusCode);
+        Assert.Equal("ROOM_NOT_FOUND", error!.Code);
+        Assert.False(exists);
+        Assert.Equal(3, otherRooms);
+    }
+
+    [Theory]
+    [InlineData("active")]
+    [InlineData("cancelled")]
+    public async Task RoomWithAnyBookingCannotBeDeleted(string status)
+    {
+        await LoginAsAdminAsync();
+        await using var db = CreateDbContext();
+        var booking = new Booking
+        {
+            RoomId = rooms[1].Id, UserId = user.Id, Date = date.AddDays(-10), StartTime = new(9, 0), EndTime = new(10, 0),
+            Status = status, Comment = "Preserved history"
+        };
+        db.Bookings.Add(booking);
+        await db.SaveChangesAsync();
+
+        using var response = await client.DeleteAsync($"/api/admin/rooms/{rooms[1].Id}");
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == booking.Id);
+        var card = await client.GetFromJsonAsync<RoomResponse>($"/api/rooms/{rooms[1].Id}");
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("ROOM_HAS_BOOKINGS", error!.Code);
+        Assert.Equal(rooms[1].Id, card!.Id);
+        Assert.Equal(booking.RoomId, saved.RoomId);
+        Assert.Equal(booking.UserId, saved.UserId);
+        Assert.Equal(booking.Date, saved.Date);
+        Assert.Equal(booking.StartTime, saved.StartTime);
+        Assert.Equal(booking.EndTime, saved.EndTime);
+        Assert.Equal(status, saved.Status);
+        Assert.Equal(booking.Comment, saved.Comment);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ConcurrentBookingAndRoomDeletionPreserveForeignKey(bool bookingWins)
+    {
+        using var student = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = false });
+        var bookingUser = new User { Login = "rooms_" + suffix + "_student", DisplayName = "Booking Student", Role = "student" };
+        bookingUser.PasswordHash = new PasswordHasher<User>().HashPassword(bookingUser, "password");
+        await using var setup = CreateDbContext();
+        setup.Users.Add(bookingUser);
+        await setup.SaveChangesAsync();
+        using var login = await student.PostAsJsonAsync("/api/auth/login", new { login = bookingUser.Login, password = "password" });
+        login.EnsureSuccessStatusCode();
+        var auth = await login.Content.ReadFromJsonAsync<AuthResponse>();
+        student.DefaultRequestHeaders.Authorization = new("Bearer", auth!.Token);
+        await LoginAsAdminAsync();
+        var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var winnerCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+        async Task WaitForBoth(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref arrivals) == 2)
+                bothReady.TrySetResult();
+            await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+        counter.BeforeDelete = async cancellationToken =>
+        {
+            await WaitForBoth(cancellationToken);
+            if (bookingWins)
+                await winnerCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+        counter.BeforeBookingInsert = async cancellationToken =>
+        {
+            await WaitForBoth(cancellationToken);
+            if (!bookingWins)
+                await winnerCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+        var payload = new { roomId = rooms[1].Id, date = DateText, startTime = "14:00", endTime = "15:00" };
+
+        var creationTask = student.PostAsJsonAsync("/api/bookings", payload);
+        var deletionTask = client.DeleteAsync($"/api/admin/rooms/{rooms[1].Id}");
+        using var winner = await (bookingWins ? creationTask : deletionTask);
+        winnerCompleted.TrySetResult();
+        using var loser = await (bookingWins ? deletionTask : creationTask);
+        var creation = bookingWins ? winner : loser;
+        var deletion = bookingWins ? loser : winner;
+        var error = await loser.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var roomExists = await db.Rooms.AnyAsync(room => room.Id == rooms[1].Id);
+        var bookings = await db.Bookings.AsNoTracking().Where(booking => booking.RoomId == rooms[1].Id).ToListAsync();
+
+        Assert.Equal(bookingWins ? HttpStatusCode.Created : HttpStatusCode.NotFound, creation.StatusCode);
+        Assert.Equal(bookingWins ? HttpStatusCode.Conflict : HttpStatusCode.NoContent, deletion.StatusCode);
+        Assert.Equal(bookingWins ? "ROOM_HAS_BOOKINGS" : "ROOM_NOT_FOUND", error!.Code);
+        Assert.Equal(bookingWins, roomExists);
+        Assert.Equal(bookingWins ? 1 : 0, bookings.Count);
+        Assert.All(bookings, booking => Assert.Equal(bookingUser.Id, booking.UserId));
     }
 
     [Theory]
@@ -564,16 +687,19 @@ public sealed class RoomTests : IAsyncLifetime
         using var cancellation = await client.DeleteAsync("/api/admin/bookings/text");
         using var creation = await client.PostAsJsonAsync("/api/admin/rooms", new { role = "admin", floor = "bad" });
         using var update = await client.PutAsJsonAsync("/api/admin/rooms/text", new { role = "admin" });
+        using var deletion = await client.DeleteAsync($"/api/admin/rooms/{rooms[1].Id}");
+        using var invalidDeletion = await client.DeleteAsync("/api/admin/rooms/text");
         using var malformed = await client.PostAsync("/api/admin/rooms", new StringContent("{", Encoding.UTF8, "application/json"));
         using var wrongMethod = await client.GetAsync("/api/admin/rooms");
         using var unknown = await client.GetAsync("/api/admin/missing");
-        var responses = new[] { list, cancellation, creation, update, malformed, wrongMethod, unknown };
+        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown };
         var bodies = await Task.WhenAll(responses.Select(response => response.Content.ReadAsStringAsync()));
 
         Assert.All(responses, response => Assert.Equal(HttpStatusCode.NotFound, response.StatusCode));
         Assert.All(responses, response => Assert.Empty(response.Headers.WwwAuthenticate));
         Assert.All(bodies, body => Assert.Empty(body));
         Assert.False(await db.Rooms.AnyAsync(room => room.Name == suffix + "_created"));
+        Assert.True(await db.Rooms.AnyAsync(room => room.Id == rooms[1].Id));
     }
 
     [Fact]
@@ -584,10 +710,17 @@ public sealed class RoomTests : IAsyncLifetime
         using var schema = JsonDocument.Parse(await client.GetStringAsync(path));
         var creation = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/rooms").GetProperty("post");
         var update = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/rooms/{id}").GetProperty("put");
+        var deletion = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/rooms/{id}").GetProperty("delete");
         var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("RoomWriteRequest");
 
         Assert.True(creation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(update.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(deletion.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(deletion.GetProperty("responses").TryGetProperty("204", out _));
+        Assert.True(deletion.GetProperty("responses").TryGetProperty("404", out _));
+        Assert.True(deletion.GetProperty("responses").TryGetProperty("409", out _));
+        Assert.False(deletion.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.False(deletion.GetProperty("responses").TryGetProperty("403", out _));
         Assert.True(creation.GetProperty("responses").TryGetProperty("201", out _));
         Assert.True(update.GetProperty("responses").TryGetProperty("200", out _));
         Assert.True(creation.GetProperty("responses").TryGetProperty("404", out _));
@@ -619,6 +752,16 @@ public sealed class RoomTests : IAsyncLifetime
     {
         public int Reads;
         public Func<CancellationToken, Task>? BeforeWrite { get; set; }
+        public Func<CancellationToken, Task>? BeforeDelete { get; set; }
+        public Func<CancellationToken, Task>? BeforeBookingInsert { get; set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("DELETE FROM \"Rooms\"") && BeforeDelete is not null)
+                await BeforeDelete(cancellationToken);
+            return result;
+        }
 
         public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
             CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
@@ -627,6 +770,8 @@ public sealed class RoomTests : IAsyncLifetime
                 Interlocked.Increment(ref Reads);
             if ((command.CommandText.Contains("INSERT INTO \"Rooms\"") || command.CommandText.Contains("UPDATE \"Rooms\"")) && BeforeWrite is not null)
                 await BeforeWrite(cancellationToken);
+            if (command.CommandText.Contains("INSERT INTO \"Bookings\"") && BeforeBookingInsert is not null)
+                await BeforeBookingInsert(cancellationToken);
             return result;
         }
     }
