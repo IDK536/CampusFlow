@@ -1,0 +1,120 @@
+@use '../variables' as *;
+
+.container {
+  width: 100%;
+  max-width: $container;
+  margin: 0 auto;
+  padding: 0 24px;
+
+  @include below(640px) {
+    padding: 0 16px;
+  }
+}
+
+.container--narrow {
+  max-width: 920px;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-main {
+  flex: 1;
+  padding: 28px 0 56px;
+
+  @include below(640px) {
+    padding: 20px 0 40px;
+  }
+}
+
+.app-main--bare {
+  padding: 0;
+}
+
+.app-footer {
+  border-top: 1px solid $line;
+  color: $muted;
+  font-size: 13px;
+
+  &__inner {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+
+  &__mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+
+    &::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      background: $lime;
+      box-shadow: 0 0 0 1px $line-2;
+    }
+  }
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 24px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+
+  &__title {
+    font-size: clamp(26px, 3vw, 34px);
+    line-height: 1.1;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  &__lead {
+    margin-top: 6px;
+    max-width: 640px;
+    color: $muted;
+  }
+}
+
+.panel {
+  background: $surface;
+  border: 1px solid $line;
+  border-radius: $leaf;
+  padding: 20px;
+  margin-bottom: 20px;
+
+  &__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px 16px;
+    margin-bottom: 16px;
+  }
+
+  &__title {
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  &__hint,
+  &__empty {
+    color: $muted;
+    font-size: 13px;
+  }
+}
+
+// Широкие списки (все брони): на больших мониторах занимаем почти весь экран, а не 1320px.
+.container--wide {
+  max-width: 2200px;
+}

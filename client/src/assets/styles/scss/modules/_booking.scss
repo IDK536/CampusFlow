@@ -1,0 +1,317 @@
+@use '../variables' as *;
+
+.room-schedule {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  border: 1px solid $line;
+  border-radius: $leaf;
+  background: $surface;
+  animation: fadeUp 0.2s $ease both;
+
+  &__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  &__eyebrow {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: $radius-xs;
+    background: $lime;
+    color: $on-lime;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  &__name {
+    margin-top: 6px;
+    font-size: 30px;
+    line-height: 1;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  &__meta {
+    margin-top: 6px;
+    color: $muted;
+    font-size: 14px;
+  }
+
+  &__section {
+    padding-top: 16px;
+    border-top: 1px solid $line;
+  }
+
+  &__section-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 12px;
+    margin-bottom: 12px;
+  }
+
+  &__title {
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  &__grid.is-loading {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
+  &__note {
+    display: flex;
+    gap: 8px;
+    padding: 12px 14px;
+    border-radius: $radius-sm;
+    background: $lilac-50;
+    color: $ink-2;
+    font-size: 14px;
+
+    .icon {
+      margin-top: 2px;
+      color: $accent-text;
+    }
+  }
+}
+
+.booking-panel {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+  border-top: 1px solid $line;
+
+  &.has-conflict {
+    animation: shake 0.45s both;
+  }
+
+  &__summary {
+    padding: 12px 14px;
+    border-radius: $radius-sm;
+    background: $violet-50;
+  }
+
+  &__label {
+    color: $accent-text;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  &__value {
+    margin-top: 2px;
+    font-size: 15px;
+
+    strong {
+      font-weight: 800;
+    }
+
+    &--empty {
+      color: $muted;
+    }
+  }
+
+  &__duration {
+    margin-left: 8px;
+    color: $muted;
+    font-size: 13px;
+  }
+
+  &__times {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: end;
+    gap: 8px;
+  }
+
+  &__dash {
+    padding-bottom: 10px;
+    color: $muted;
+  }
+}
+
+// ---------- Билет ----------
+.ticket {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  border-radius: $radius-lg;
+  background: $surface;
+  box-shadow: $shadow-lg;
+  overflow: hidden;
+  animation: ticketIn 0.55s $ease both;
+
+  @include below(480px) {
+    grid-template-columns: 1fr;
+  }
+
+  &__stub {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 20px 8px;
+    background: $violet;
+    color: $on-accent;
+
+    // Перфорация между корешком и билетом.
+    &::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: -6px;
+      bottom: 0;
+      width: 12px;
+      background: radial-gradient(circle at 6px 8px, rgba(21, 18, 42, 0.5) 4px, transparent 4.5px) 0 0 / 12px 16px repeat-y;
+
+      @include below(480px) {
+        display: none;
+      }
+    }
+
+    @include below(480px) {
+      flex-direction: row;
+      justify-content: flex-start;
+      padding: 12px 20px;
+    }
+  }
+
+  &__check {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: $lime;
+    color: $on-lime;
+    animation: pop 0.4s 0.35s $ease both;
+
+    .icon {
+      stroke-width: 2.5;
+    }
+  }
+
+  &__stub-label {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  &__stub-id {
+    font-weight: 800;
+  }
+
+  &__main {
+    min-width: 0;
+    padding: 24px 24px 20px 28px;
+  }
+
+  &__eyebrow {
+    color: $lime-text;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  &__room {
+    font-size: 44px;
+    line-height: 1;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin-top: 6px;
+  }
+
+  &__where {
+    margin-top: 6px;
+    color: $muted;
+    font-size: 14px;
+  }
+
+  &__facts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px dashed $line-2;
+
+    dt {
+      color: $faint;
+      font-size: 12px;
+    }
+
+    dd {
+      margin-top: 2px;
+      font-size: 18px;
+      font-weight: 800;
+    }
+  }
+
+  &__sub {
+    display: block;
+    color: $muted;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  // Комментарий может быть одним длинным словом без пробелов — переносим где угодно.
+  &__comment {
+    margin-top: 12px;
+    color: $ink-2;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+    white-space: pre-line;
+
+    &--empty {
+      color: $faint;
+    }
+  }
+
+  &__top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: -6px -8px 4px 0;
+  }
+
+  // Отменённая или прошедшая бронь — корешок без акцента.
+  &--muted &__stub {
+    background: $surface-3;
+    color: $ink-2;
+  }
+
+  &--muted &__check {
+    background: $track;
+    color: $muted;
+  }
+
+  &__actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+}
+
+@keyframes ticketIn {
+  from {
+    opacity: 0;
+    transform: translateY(40px) rotate(-2deg);
+  }
+  60% {
+    transform: translateY(-4px) rotate(0.5deg);
+  }
+}
+
+@keyframes pop {
+  from {
+    transform: scale(0);
+  }
+  70% {
+    transform: scale(1.15);
+  }
+}

@@ -1,0 +1,32 @@
+@use '../variables' as *;
+
+.room-form {
+  display: grid;
+  gap: 16px;
+
+  &__row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+}
+
+// Период «с — по» в фильтре броней.
+.period-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  &__dash {
+    color: $faint;
+  }
+}
+
+.admin-results {
+  transition: opacity 0.2s;
+
+  &.is-loading {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+}

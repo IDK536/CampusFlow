@@ -1,0 +1,638 @@
+@use '../variables' as *;
+
+.period-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  &__label {
+    min-width: 140px;
+    text-align: center;
+    font-weight: 700;
+  }
+}
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+
+  @include below(960px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px;
+  border: 1px solid $line;
+  border-radius: $leaf;
+  background: $surface;
+  animation: fadeUp 0.3s $ease both;
+
+  &__value {
+    padding-right: 40px;
+    font-size: 28px;
+    line-height: 1.1;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+
+    @include below(560px) {
+      padding-right: 0;
+      font-size: 22px;
+    }
+  }
+
+  &__label {
+    color: $muted;
+    font-size: 13px;
+  }
+
+  position: relative;
+  overflow: hidden;
+
+  &__icon {
+    // На телефоне карточки узкие — иконка в углу только мешает значению.
+    @include below(560px) {
+      display: none !important;
+    }
+
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: $violet-50;
+    color: $accent-text;
+  }
+
+  &__note {
+    margin-top: auto;
+    padding-top: 8px;
+    color: $faint;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  // Мини-график загрузки по дням.
+  &__spark {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 34px;
+    margin-top: auto;
+    padding-top: 8px;
+  }
+
+  &__spark-bar {
+    flex: 1;
+    max-width: 14px;
+    min-height: 3px;
+    border-radius: 3px 3px 1px 1px;
+    background: $violet-100;
+    transform-origin: bottom;
+    animation: grow 0.5s $ease both;
+
+    &.is-max {
+      background: $violet;
+    }
+  }
+
+  &--violet {
+    border-color: $accent-line;
+    background: $violet;
+    color: $on-accent;
+
+    .kpi__label,
+    .kpi__note {
+      color: rgba(255, 255, 255, 0.85);
+    }
+
+    .kpi__icon {
+      background: rgba(255, 255, 255, 0.16);
+      color: #fff;
+    }
+  }
+
+  &--lime {
+    border-color: $lime;
+    background: $lime;
+    color: $on-lime;
+
+    .kpi__label,
+    .kpi__note {
+      color: $on-lime-2;
+    }
+
+    .kpi__icon {
+      background: rgba(0, 0, 0, 0.08);
+      color: $on-lime;
+    }
+  }
+}
+
+.heatmap {
+  &__scroll {
+    overflow-x: auto;
+  }
+
+  &__table {
+    width: 100%;
+    min-width: 640px;
+    table-layout: fixed;
+    border-spacing: 4px;
+    border-collapse: separate;
+
+    th {
+      font-size: 12px;
+      font-weight: 600;
+      color: $muted;
+    }
+
+    td {
+      padding: 0;
+    }
+
+    tfoot th {
+      text-align: left;
+      padding-left: 4px;
+    }
+  }
+
+  &__corner {
+    text-align: left;
+    padding-left: 4px;
+  }
+
+  &__day {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    padding: 4px 0;
+    border-radius: $radius-xs;
+    color: $muted;
+
+    strong {
+      color: $ink;
+      font-size: 17px;
+    }
+
+    &:hover {
+      background: $violet-50;
+    }
+  }
+
+  th.is-today .heatmap__day {
+    background: $lime;
+    color: $on-lime;
+
+    strong {
+      color: $on-lime;
+    }
+  }
+
+  &__corner,
+  &__building {
+    width: 110px;
+    text-align: left;
+  }
+
+  &__letter {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin-right: 6px;
+    border-radius: 4px 10px 4px 4px;
+    background: $violet;
+    color: $on-accent;
+    font-weight: 800;
+  }
+
+  &__rooms {
+    font-weight: 400;
+    color: $faint;
+  }
+
+  &__cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 54px;
+    border-radius: $radius-xs;
+    font-weight: 700;
+    font-size: 14px;
+
+    small {
+      font-size: 11px;
+      font-weight: 500;
+      opacity: 0.75;
+    }
+
+    // Яркость задаёт --heat (0–100%) — смесь фона и акцентного цвета.
+    background: color-mix(in oklab, $violet var(--heat, 0%), var(--heat-0));
+    color: $ink;
+    transition: transform 0.15s $ease, box-shadow 0.15s;
+
+    &:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 2px $accent-line;
+    }
+
+    &.is-strong {
+      color: $on-accent;
+    }
+
+    &--0 {
+      background: var(--heat-0);
+      color: $faint;
+    }
+  }
+
+  &__total {
+    text-align: center;
+    font-weight: 800;
+    font-size: 14px;
+
+    &--all {
+      color: $accent-text;
+    }
+  }
+
+  &__total-head {
+    width: 64px;
+  }
+
+  &__legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    color: $muted;
+    font-size: 12px;
+  }
+
+  &__gradient {
+    width: 140px;
+    height: 10px;
+    border-radius: 5px;
+    background: linear-gradient(90deg, color-mix(in oklab, $violet 12%, var(--heat-0)), color-mix(in oklab, $violet 75%, var(--heat-0)));
+  }
+
+  &__legend-note {
+    margin-left: auto;
+    color: $faint;
+  }
+
+  &__empty {
+    padding: 24px 0 8px;
+    color: $muted;
+    text-align: center;
+  }
+}
+
+.stats-page__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+  margin-bottom: 20px;
+
+  @include below(960px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panel {
+    margin-bottom: 0;
+  }
+}
+
+.stats-page__stack {
+  display: grid;
+  gap: 20px;
+}
+
+.hour-bars {
+  &__chart {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 8px;
+  }
+
+  &__y {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 180px;
+    margin-top: -6px;
+    margin-bottom: -6px;
+    color: $faint;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: right;
+  }
+
+  &__plot {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(18, minmax(0, 1fr));
+    gap: 4px;
+    align-items: end;
+    height: 180px;
+  }
+
+  &__grid {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    pointer-events: none;
+
+    span {
+      border-top: 1px dashed $line;
+
+      &:last-child {
+        border-top: 1px solid $line-2;
+      }
+    }
+  }
+
+  &__col {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+    cursor: default;
+
+    // Невидимая зона наведения шире самого столбика.
+    &::before {
+      content: '';
+      position: absolute;
+      inset: 0 -2px;
+      border-radius: 6px;
+      transition: background-color 0.12s;
+    }
+
+    &.is-hover::before {
+      background: $violet-50;
+    }
+  }
+
+  &__bar {
+    position: relative;
+    width: 100%;
+    min-height: 3px;
+    border-radius: 4px 4px 0 0;
+    background: $violet-100;
+    transform-origin: bottom;
+    animation: grow 0.5s $ease both;
+    transition: background-color 0.12s;
+
+    &.is-peak {
+      background: $violet;
+    }
+  }
+
+  &__col.is-hover &__bar:not(.is-peak) {
+    background: $lilac;
+  }
+
+  &__peak-label {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 50%;
+    transform: translateX(-50%);
+    color: $accent-text;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  &__tip {
+    position: absolute;
+    left: 50%;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    padding: 6px 10px;
+    border: 1px solid $line-2;
+    border-radius: 8px;
+    background: $surface-raised;
+    box-shadow: $shadow-sm;
+    color: $muted;
+    font-size: 12px;
+    white-space: nowrap;
+    transform: translateX(-50%);
+    pointer-events: none;
+
+    strong {
+      color: $ink;
+      font-size: 13px;
+    }
+  }
+
+  &__col:nth-child(-n + 4) &__tip {
+    left: 0;
+    transform: none;
+  }
+
+  &__col:nth-last-child(-n + 3) &__tip {
+    left: auto;
+    right: 0;
+    transform: none;
+  }
+
+  &__axis {
+    position: relative;
+    height: 20px;
+    margin-top: 6px;
+    margin-left: 36px;
+    color: $muted;
+    font-size: 12px;
+
+    span {
+      position: absolute;
+      transform: translateX(-50%);
+
+      &:first-child {
+        transform: none;
+      }
+    }
+  }
+}
+
+// Загрузка по корпусам — компактные строки: буква, название, процент, полоса под ними.
+.building-load {
+  display: grid;
+  gap: 12px;
+
+  &__item {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    grid-template-areas:
+      'letter name value'
+      'letter track track';
+    gap: 4px 12px;
+    align-items: center;
+  }
+
+  &__letter {
+    grid-area: letter;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 4px 10px 4px 4px;
+    background: $violet-50;
+    color: $accent-text;
+    font-size: 14px;
+    font-weight: 800;
+  }
+
+  &__item.is-top &__letter {
+    background: $lime;
+    color: $on-lime;
+  }
+
+  &__name {
+    grid-area: name;
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__meta {
+    margin-left: 8px;
+    color: $faint;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  &__value {
+    grid-area: value;
+    font-size: 14px;
+    font-weight: 800;
+  }
+
+  &__track {
+    grid-area: track;
+    height: 6px;
+    border-radius: 3px;
+    background: $track;
+    overflow: hidden;
+
+    span {
+      display: block;
+      height: 100%;
+      border-radius: 3px;
+      background: $violet;
+      transform-origin: left;
+      animation: growX 0.6s $ease both;
+    }
+  }
+
+  &__idle {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid $line;
+    color: $faint;
+    font-size: 12px;
+  }
+}
+
+@keyframes growX {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+.top-rooms {
+  display: grid;
+  gap: 10px;
+
+  &__item {
+    display: grid;
+    grid-template-columns: 26px 64px 1fr 44px auto;
+
+    @include below(560px) {
+      grid-template-columns: 26px auto 1fr auto;
+      grid-template-areas:
+        'rank name value percent'
+        '. bar bar bar';
+      row-gap: 6px;
+
+      .top-rooms__rank { grid-area: rank; }
+      .top-rooms__name { grid-area: name; }
+      .top-rooms__value { grid-area: value; text-align: right; font-size: 12px; }
+      .top-rooms__percent { grid-area: percent; }
+      .top-rooms__bar { grid-area: bar; height: 6px; }
+    }
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+  }
+
+  &__rank {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: $bg;
+    color: $muted;
+    font-weight: 700;
+  }
+
+  &__item:first-child &__rank {
+    background: $lime;
+    color: $on-lime;
+  }
+
+  &__name {
+    font-weight: 800;
+  }
+
+  &__bar {
+    height: 8px;
+    border-radius: 4px;
+    background: $track;
+    overflow: hidden;
+
+    span {
+      display: block;
+      height: 100%;
+      background: $violet;
+      border-radius: 4px;
+      transform-origin: left;
+      animation: growX 0.6s $ease both;
+    }
+  }
+
+  &__percent {
+    font-weight: 800;
+    text-align: right;
+  }
+
+  &__value {
+    color: $muted;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+}

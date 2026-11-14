@@ -1,0 +1,134 @@
+@use '../variables' as *;
+
+.login-page {
+  min-height: 100vh;
+  background: $surface;
+
+  &__bar .project-header__inner {
+    flex-wrap: nowrap;
+    min-height: 60px;
+    padding-top: 0;
+  }
+
+  // Переключатель темы на входе виден и на телефоне.
+  &__theme {
+    @include below(640px) {
+      display: block !important;
+    }
+  }
+
+  // Форма по центру шириной до 420 px; на телефоне — во всю ширину.
+  &__form {
+    display: flex;
+    justify-content: center;
+    padding: 32px 24px 48px;
+
+    @include below(640px) {
+      padding: 24px 16px 40px;
+    }
+  }
+}
+
+.login-form {
+  width: 100%;
+  max-width: 420px;
+  animation: fadeUp 0.45s 0.1s $ease both;
+
+  &__title {
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  &__lead {
+    margin-top: 6px;
+    color: $muted;
+  }
+
+  &__form {
+    display: grid;
+    gap: 14px;
+    margin-top: 24px;
+  }
+
+  &__demo {
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid $line;
+  }
+
+  &__demo-title {
+    font-weight: 700;
+  }
+
+  &__demo-note {
+    margin-top: 2px;
+    color: $muted;
+    font-size: 13px;
+  }
+
+  &__demo-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 14px;
+  }
+}
+
+.demo-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid $line;
+  border-radius: $radius;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s,
+    transform 0.15s $ease;
+
+  &:hover:not(:disabled) {
+    border-color: $accent-line;
+    background: $violet-50;
+  }
+
+  &:hover:not(:disabled) &__go {
+    transform: translateX(3px);
+    color: $accent-text;
+  }
+
+  &__text {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__name {
+    font-weight: 700;
+  }
+
+  &__login {
+    margin-left: 8px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: $surface-3;
+    color: $ink-2;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  &__hint {
+    color: $muted;
+    font-size: 13px;
+  }
+
+  &__go {
+    color: $faint;
+    transition:
+      transform 0.15s $ease,
+      color 0.15s;
+  }
+}
+

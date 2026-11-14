@@ -1,0 +1,19 @@
+# Запуск одной командой: docker compose up --build → http://localhost:3000
+services:
+  client:
+    build:
+      context: ./client
+      args:
+        # true — фронт на mock-данных, backend не нужен; false — через /api к сервису backend
+        VITE_USE_MOCK: ${VITE_USE_MOCK:-true}
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-http://backend:8080}
+    ports:
+      - '3000:80'
+    restart: unless-stopped
+
+  # Backend добавляется сюда, когда появится в репозитории, например:
+  # backend:
+  #   build: ./server
+  #   ports:
+  #     - '8080:8080'

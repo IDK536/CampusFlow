@@ -1,0 +1,728 @@
+@use '../variables' as *;
+
+// ---------- Фильтры ----------
+.room-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  padding: 18px 20px;
+
+  @include below(640px) {
+    padding: 16px 14px;
+  }
+
+  margin-bottom: 20px;
+  border: 1px solid $line;
+  border-radius: $leaf;
+  background: $surface;
+
+  &__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 16px 28px;
+    min-width: 0;
+
+    @include below(640px) {
+      gap: 14px 16px;
+    }
+
+    // Строка «День + Время»: блок времени по высоте посередине строки с днями.
+    &:first-child {
+      align-items: center;
+    }
+  }
+
+  &__group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+
+    // Дни занимают ровно своё место, всё остальное в строке — блоку времени.
+    &--days {
+      flex: 0 0 auto;
+      max-width: 100%;
+    }
+
+    // Оборудование одной строкой: не помещается — вся группа уходит ниже (на телефоне чипы переносятся).
+    &--grow {
+      flex: 0 1 auto;
+      max-width: 100%;
+
+      .chip-row {
+        flex-wrap: nowrap;
+
+        @include below(720px) {
+          flex-wrap: wrap;
+        }
+      }
+    }
+  }
+
+  &__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: $muted;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  &__reset {
+    align-self: center;
+    margin-left: auto;
+
+    &.is-hidden {
+      visibility: hidden;
+    }
+  }
+}
+
+.day-picker {
+  // Не помещаются — переносятся на вторую строку (раньше прокручивались со скрытой полосой
+  // и выглядели обрезанными).
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  &__day {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-width: 58px;
+    height: 58px;
+    padding: 0 10px;
+    border: 1px solid $line-2;
+    border-radius: $radius-sm;
+    background: $surface;
+    transition:
+      border-color 0.15s,
+      background-color 0.15s,
+      color 0.15s;
+
+    &:hover:not(.is-active) {
+      border-color: $ink-2;
+    }
+
+    &.is-active {
+      border-color: $accent-line;
+      background: $violet;
+      color: $on-accent;
+
+      .day-picker__weekday {
+        color: rgba(255, 255, 255, 0.92);
+      }
+    }
+  }
+
+  &__weekday {
+    color: $muted;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  &__num {
+    font-size: 20px;
+    font-weight: 800;
+    line-height: 1.1;
+  }
+
+  &__other {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-width: 72px;
+    height: 58px;
+    padding: 0 10px;
+    border: 1px dashed $line-2;
+    border-radius: $radius-sm;
+    color: $ink-2;
+    cursor: pointer;
+
+    &:hover {
+      border-color: $ink-2;
+    }
+
+    &.is-active {
+      border-style: solid;
+      border-color: $accent-line;
+      background: $violet;
+      color: $on-accent;
+
+      .day-picker__weekday {
+        color: rgba(255, 255, 255, 0.92);
+      }
+
+      .day-picker__num {
+        font-size: 16px;
+      }
+    }
+
+    &:focus-within {
+      @include focus-ring;
+    }
+  }
+
+  // Нативный календарь растянут поверх кнопки и прозрачен: выглядит как наш элемент, работает как системный.
+  &__native {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+
+    &::-webkit-calendar-picker-indicator {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      cursor: pointer;
+    }
+  }
+}
+
+// ---------- Блок «Время»: подпись сверху, режим и поля в одну линию ----------
+.time-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+
+  &__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+
+    .select {
+      width: auto;
+      min-width: 108px;
+    }
+  }
+
+  &__duration.select {
+    border-color: $accent-line;
+  }
+}
+
+.room-filters__group--time {
+  // Сразу справа от дней одной линией. Не помещается — весь блок уходит на следующую строку,
+  // переключатель и поля не разваливаются друг под друга (кроме телефона).
+  flex: 0 1 auto;
+  max-width: 100%;
+
+  .time-picker__row,
+  .time-picker__fields {
+    flex-wrap: nowrap;
+
+    @include below(720px) {
+      flex-wrap: wrap;
+    }
+  }
+}
+
+.time-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  .select {
+    width: auto;
+    min-width: 120px;
+  }
+}
+
+// ---------- Раскладка главного экрана ----------
+.rooms-page {
+  // Шире остальных страниц: в первую строку фильтров помещаются и дни, и блок времени целиком.
+  > .container {
+    max-width: 1640px;
+  }
+
+  &__layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 420px;
+    gap: 20px;
+    align-items: start;
+
+    @include below(1100px) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  &__results {
+    min-width: 0;
+  }
+
+  &__schedule {
+    position: sticky;
+    top: 84px;
+    scroll-margin-top: 140px;
+
+    @include below(1100px) {
+      position: static;
+    }
+  }
+}
+
+.results-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+
+  &__count {
+    color: $muted;
+
+    strong {
+      color: $ink;
+      font-size: 17px;
+    }
+  }
+}
+
+.schedule-placeholder {
+  position: relative;
+  overflow: hidden;
+  padding: 28px 24px 28px;
+  border: 1px dashed $line-2;
+  border-radius: $leaf;
+  background: $surface;
+
+  @include below(1100px) {
+    display: none;
+  }
+
+  &__shape {
+    display: block;
+    width: 56px;
+    height: 56px;
+    margin-bottom: 18px;
+    background:
+      radial-gradient(circle at 100% 100%, $lilac 0 27px, transparent 28px) 28px 28px / 28px 28px no-repeat,
+      linear-gradient($lime, $lime) 0 0 / 28px 28px no-repeat,
+      linear-gradient($violet, $violet) 28px 0 / 28px 28px no-repeat;
+    border-radius: 0 0 28px 0;
+  }
+
+  &__title {
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  &__text {
+    margin-top: 6px;
+    color: $muted;
+  }
+}
+
+// ---------- Карточки аудиторий ----------
+.room-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+
+  &__item {
+    animation: fadeUp 0.3s $ease both;
+  }
+}
+
+.room-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  border: 1px solid $line;
+  border-radius: $radius;
+  background: $surface;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.15s $ease;
+
+  &:hover {
+    border-color: $line-2;
+    box-shadow: $shadow;
+    transform: translateY(-1px);
+  }
+
+  &.is-selected {
+    border-color: $accent-line;
+    box-shadow: 0 0 0 1px $accent-line;
+  }
+
+  &.is-full {
+    background: $surface-muted;
+  }
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  &__name {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+
+  &__capacity {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: $violet-50;
+    color: $accent-text;
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  &__meta {
+    margin-top: -6px;
+    color: $muted;
+    font-size: 13px;
+  }
+
+  &__day {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: auto;
+  }
+
+  &__scale {
+    display: flex;
+    justify-content: space-between;
+    color: $faint;
+    font-size: 11px;
+  }
+
+  &__free {
+    font-size: 13px;
+    font-weight: 600;
+    color: $lime-text;
+
+    &.is-none {
+      color: $muted;
+    }
+  }
+}
+
+// ---------- Подбор ----------
+.recommend {
+  display: grid;
+  gap: 16px;
+
+  &__form {
+    display: grid;
+    gap: 18px;
+    padding: 22px;
+    border-radius: $leaf;
+    background: $surface;
+    border: 1px solid $line;
+    animation: fadeUp 0.3s $ease both;
+
+    > .button {
+      justify-self: start;
+    }
+  }
+
+  &__title {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+
+  &__lead {
+    margin-top: 4px;
+    color: $muted;
+    max-width: 620px;
+  }
+
+  // Поля идут строками в фиксированном порядке; корпус и этаж — рядом, по ширине содержимого,
+  // а если не помещаются — этаж переносится вниз. Рамка формы тянется на всю ширину.
+  &__fields {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+
+    > .field {
+      max-width: 100%;
+    }
+
+    .field--wide,
+    .field--time {
+      align-self: stretch;
+    }
+
+    .input[type='number'] {
+      max-width: 140px;
+    }
+  }
+
+  &__pair {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 20px;
+    max-width: 100%;
+
+    .select {
+      width: auto;
+      min-width: 180px;
+      max-width: 100%;
+    }
+  }
+
+  &__results {
+    display: grid;
+    gap: 12px;
+  }
+}
+
+.recommendation {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  border: 1px solid $line;
+  border-radius: $leaf;
+  background: $surface;
+  overflow: hidden;
+  animation: fadeUp 0.35s $ease both;
+
+  &:nth-child(2) {
+    animation-delay: 0.06s;
+  }
+
+  &:nth-child(3) {
+    animation-delay: 0.12s;
+  }
+
+  &__rank {
+    display: grid;
+    place-items: center;
+    font-size: 30px;
+    font-weight: 800;
+  }
+
+  &--1 &__rank {
+    background: $lime;
+    color: $on-lime;
+  }
+
+  &--2 &__rank {
+    background: $lilac;
+    color: $on-lime;
+  }
+
+  &--3 &__rank {
+    background: $violet;
+    color: $on-accent;
+  }
+
+  &__body {
+    display: grid;
+    gap: 12px;
+    padding: 16px 18px;
+    min-width: 0;
+  }
+
+  &__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  &__name {
+    font-size: 20px;
+    font-weight: 800;
+  }
+
+  &__meta {
+    color: $muted;
+    font-size: 13px;
+  }
+
+  &__time {
+    padding: 4px 10px;
+    border-radius: $radius-xs;
+    background: $inverse-bg;
+    color: $inverse-text;
+    font-weight: 700;
+    white-space: nowrap;
+
+    // Свободна не всё запрошенное время — выделяем, чтобы это было видно сразу.
+    &--partial {
+      background: transparent;
+      color: $accent-text;
+      box-shadow: inset 0 0 0 1px $accent-line;
+    }
+  }
+
+  &__reasons {
+    display: grid;
+    gap: 4px;
+    color: $ink-2;
+    font-size: 14px;
+
+    li {
+      position: relative;
+      padding-left: 16px;
+
+      &::before {
+        content: '';
+        position: absolute;
+        left: 2px;
+        top: 8px;
+        width: 6px;
+        height: 6px;
+        border-radius: 1px;
+        background: $violet;
+      }
+    }
+  }
+
+  &__foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  &__score {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: $muted;
+    font-size: 13px;
+  }
+
+  &__score-bar {
+    width: 80px;
+    height: 6px;
+    border-radius: 3px;
+    background: $track;
+    overflow: hidden;
+
+    span {
+      display: block;
+      height: 100%;
+      background: $violet;
+    }
+  }
+
+  @include below(520px) {
+    grid-template-columns: 44px 1fr;
+
+    &__rank {
+      font-size: 22px;
+    }
+
+    &__head {
+      flex-direction: column;
+    }
+  }
+}
+
+// Подбор: номер варианта — просто цифра с тонкой цветной чертой, без заливки во всю высоту.
+.recommendation {
+  grid-template-columns: 52px 1fr;
+
+  &__rank {
+    align-items: start;
+    padding-top: 16px;
+    background: transparent !important;
+    border-right: 1px solid $line;
+    font-size: 24px;
+  }
+
+  &--1 &__rank {
+    color: $lime-text;
+    box-shadow: inset 3px 0 0 $lime;
+  }
+
+  &--2 &__rank {
+    color: $accent-text;
+    box-shadow: inset 3px 0 0 $lilac;
+  }
+
+  &--3 &__rank {
+    color: $muted;
+    box-shadow: inset 3px 0 0 $line-2;
+  }
+}
+
+// Плавающая кнопка возврата к выбранной аудитории / наверх.
+.back-to-top {
+  position: fixed;
+  right: 20px;
+  bottom: 24px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 46px;
+  padding: 0 16px 0 13px;
+  border: 1px solid $accent-line;
+  border-radius: 23px;
+  background: $violet;
+  color: $on-accent;
+  font-weight: 700;
+  font-size: 14px;
+  box-shadow: $shadow;
+  opacity: 0;
+  transform: translateY(12px) scale(0.95);
+  pointer-events: none;
+  transition:
+    opacity 0.2s $ease,
+    transform 0.2s $ease,
+    background-color 0.15s;
+
+  &.is-visible {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
+  &:hover {
+    background: $violet-hover;
+  }
+
+  // Над нижней панелью вкладок на телефоне.
+  body.has-tab-bar & {
+    bottom: 104px;
+  }
+
+  @include below(768px) {
+    width: 46px;
+    padding: 0;
+    justify-content: center;
+
+    .back-to-top__label {
+      display: none;
+    }
+  }
+}
