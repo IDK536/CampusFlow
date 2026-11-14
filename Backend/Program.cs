@@ -31,6 +31,7 @@ builder.Services.AddOptions<JwtOptions>().BindConfiguration("Jwt")
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<RoomService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
     .Configure<IOptions<JwtOptions>>((options, settings) =>
@@ -69,7 +70,14 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
         policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod();
 }));
 builder.Services.AddSwaggerGen(options =>
-    options.SwaggerDoc("v1", new OpenApiInfo { Title = "CampusFlow API", Version = "v1" }));
+{
+    options.SwaggerDoc("v1", new OpenApiInfo { Title = "CampusFlow API", Version = "v1" });
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT"
+    });
+    options.OperationFilter<RoomSearchOperationFilter>();
+});
 builder.Services.AddDbContext<CampusFlowDbContext>(options => options.UseNpgsql(
     builder.Configuration.GetConnectionString("CampusFlow")
     ?? throw new InvalidOperationException("Set ConnectionStrings:CampusFlow before accessing the database.")));
