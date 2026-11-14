@@ -32,6 +32,7 @@ builder.Services.AddOptions<JwtOptions>().BindConfiguration("Jwt")
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<RoomService>();
+builder.Services.AddScoped<BookingService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
     .Configure<IOptions<JwtOptions>>((options, settings) =>
@@ -77,6 +78,8 @@ builder.Services.AddSwaggerGen(options =>
         Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT"
     });
     options.OperationFilter<RoomSearchOperationFilter>();
+    options.OperationFilter<AuthorizationOperationFilter>();
+    options.SchemaFilter<BookingRequestSchemaFilter>();
 });
 builder.Services.AddDbContext<CampusFlowDbContext>(options => options.UseNpgsql(
     builder.Configuration.GetConnectionString("CampusFlow")

@@ -1,0 +1,520 @@
+using System.Data.Common;
+using System.Globalization;
+using System.Net;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text.Json;
+using CampusFlow.Api.Contracts;
+using CampusFlow.Api.Data;
+using CampusFlow.Api.Models;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Xunit;
+
+namespace CampusFlow.Api.Tests;
+
+public sealed class BookingTests : IAsyncLifetime
+{
+    private readonly string suffix = Guid.NewGuid().ToString("N");
+    private readonly List<string> logins = [];
+    private readonly BookingCommands commands = new();
+    private readonly TestClock clock = new();
+    private string connection = null!;
+    private WebApplicationFactory<Program> factory = null!;
+    private HttpClient client = null!;
+    private User user = null!;
+    private Room room = null!;
+    private DateOnly date;
+    private string DateText => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    public async Task InitializeAsync()
+    {
+        DotNetEnv.Env.NoClobber().TraversePath().Load();
+        connection = Environment.GetEnvironmentVariable("CAMPUSFLOW_TEST_CONNECTION")
+            ?? throw new InvalidOperationException("CAMPUSFLOW_TEST_CONNECTION is required.");
+        if (new Npgsql.NpgsqlConnectionStringBuilder(connection).Database != "campusflow_test")
+            throw new InvalidOperationException("Booking tests require campusflow_test.");
+        await using var db = CreateDbContext();
+        await db.Database.OpenConnectionAsync();
+        await db.Database.MigrateAsync();
+        user = await AddUserAsync();
+        date = DateOnly.FromDateTime(clock.GetLocalNow().DateTime).AddDays(1);
+        room = new Room { Name = "booking_" + suffix, Building = "A", Floor = 1, Capacity = 20, Equipment = ["projector"] };
+        db.Rooms.Add(room);
+        await db.SaveChangesAsync();
+        factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:CampusFlow"] = connection,
+                ["Jwt:Key"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)),
+                ["Jwt:Issuer"] = "CampusFlow", ["Jwt:Audience"] = "CampusFlowClient"
+            }));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(clock);
+                services.AddDbContext<CampusFlowDbContext>((_, options) => options.AddInterceptors(commands));
+            });
+        });
+        client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = false });
+        await LoginAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        client?.Dispose();
+        if (factory is not null)
+            await factory.DisposeAsync();
+        if (connection is null)
+            return;
+        await using var db = CreateDbContext();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var userIds = db.Users.Where(item => logins.Contains(item.Login)).Select(item => item.Id);
+        var roomId = room?.Id ?? 0;
+        var roomIds = db.Rooms.Where(item => item.Id == roomId || item.Name == "booking_" + suffix).Select(item => item.Id);
+        await db.RefreshTokens.Where(token => userIds.Contains(token.UserId)).ExecuteDeleteAsync();
+        await db.Bookings.Where(booking => userIds.Contains(booking.UserId) || roomIds.Contains(booking.RoomId)).ExecuteDeleteAsync();
+        await db.Rooms.Where(item => item.Id == roomId || item.Name == "booking_" + suffix).ExecuteDeleteAsync();
+        await db.Users.Where(item => logins.Contains(item.Login)).ExecuteDeleteAsync();
+        await transaction.CommitAsync();
+    }
+
+    [Fact]
+    public async Task CreationReturnsBookingAndUpdatesOwnListAndAvailability()
+    {
+        var payload = Request();
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var created = await response.Content.ReadFromJsonAsync<BookingResponse>();
+        var mine = await client.GetFromJsonAsync<BookingResponse[]>("/api/bookings/my");
+        var slots = await client.GetFromJsonAsync<RoomFreeSlotsResponse>($"/api/rooms/{room.Id}/free-slots?date={DateText}");
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.True(created!.Id > 0);
+        Assert.Equal(room.Id, created.RoomId);
+        Assert.Equal(room.Name, created.RoomName);
+        Assert.Equal(user.Id, created.UserId);
+        Assert.Equal(user.DisplayName, created.UserDisplayName);
+        Assert.Equal(DateText, created.Date);
+        Assert.Equal("14:00", created.StartTime);
+        Assert.Equal("15:30", created.EndTime);
+        Assert.Equal("active", created.Status);
+        Assert.Equal("Test booking", created.Comment);
+        Assert.Contains(mine!, booking => booking == created);
+        Assert.Equal([new FreeSlotResponse("09:00", "14:00"), new FreeSlotResponse("15:30", "18:00")], slots!.FreeSlots);
+        Assert.Equal(new[] { "comment", "date", "endTime", "id", "roomId", "roomName", "startTime", "status", "userDisplayName", "userId" },
+            body.RootElement.EnumerateObject().Select(property => property.Name).Order().ToArray());
+    }
+
+    [Fact]
+    public async Task ServerManagedAndUnknownFieldsAreIgnored()
+    {
+        var other = await AddUserAsync();
+        var payload = Request();
+        payload["id"] = -987;
+        payload["userId"] = other.Id;
+        payload["status"] = "cancelled";
+        payload["unknown"] = "ignored";
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var result = await response.Content.ReadFromJsonAsync<BookingResponse>();
+        await using var db = CreateDbContext();
+        var saved = await db.Bookings.SingleAsync(booking => booking.RoomId == room.Id);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.True(result!.Id > 0);
+        Assert.Equal(user.Id, result.UserId);
+        Assert.Equal("active", result.Status);
+        Assert.Equal(user.Id, saved.UserId);
+        Assert.Equal("active", saved.Status);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CommentMayBeOmittedOrNull(bool omitted)
+    {
+        var payload = Request();
+        if (omitted)
+            payload.Remove("comment");
+        else
+            payload["comment"] = null;
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var result = await response.Content.ReadFromJsonAsync<BookingResponse>();
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Null(result!.Comment);
+    }
+
+    [Theory]
+    [InlineData("roomId")]
+    [InlineData("date")]
+    [InlineData("startTime")]
+    [InlineData("endTime")]
+    public async Task MissingRequiredFieldReturnsValidationError(string field)
+    {
+        var payload = Request();
+        payload.Remove(field);
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
+    [Theory]
+    [InlineData("roomId", "0")]
+    [InlineData("roomId", "-1")]
+    [InlineData("roomId", "\"1\"")]
+    [InlineData("roomId", "null")]
+    [InlineData("date", "null")]
+    [InlineData("date", "\"\"")]
+    [InlineData("date", "\"2000-01-01\"")]
+    [InlineData("date", "\"2035-02-29\"")]
+    [InlineData("date", "\"2035-1-01\"")]
+    [InlineData("date", "\"2035-01-01T00:00:00\"")]
+    [InlineData("startTime", "null")]
+    [InlineData("startTime", "\"9:00\"")]
+    [InlineData("startTime", "\"14:00:00\"")]
+    [InlineData("startTime", "\"14:15\"")]
+    [InlineData("startTime", "\"08:30\"")]
+    [InlineData("startTime", "\"15:30\"")]
+    [InlineData("startTime", "\"16:00\"")]
+    [InlineData("endTime", "null")]
+    [InlineData("endTime", "\"18:30\"")]
+    public async Task InvalidCreationFieldReturnsValidationError(string field, string jsonValue)
+    {
+        var payload = Request();
+        payload[field] = JsonSerializer.Deserialize<JsonElement>(jsonValue);
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
+    [Theory]
+    [InlineData(14, 10, 0, "14:00", false)]
+    [InlineData(14, 30, 15, "14:30", false)]
+    [InlineData(14, 29, 59, "14:30", true)]
+    [InlineData(14, 30, 0, "14:30", true)]
+    public async Task TodayUsesCurrentTimeIncludingSeconds(int hour, int minute, int second, string start, bool allowed)
+    {
+        var localDay = DateTime.Today;
+        clock.SetLocal(localDay.AddHours(hour).AddMinutes(minute).AddSeconds(second));
+        var payload = Request();
+        payload["date"] = localDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        payload["startTime"] = start;
+        payload["endTime"] = "16:00";
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+
+        Assert.Equal(allowed ? HttpStatusCode.Created : HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task StartTimeIsCheckedAgainAfterDatabaseReads()
+    {
+        var localDay = DateTime.Today;
+        clock.SetLocal(localDay.AddHours(14).AddMinutes(29));
+        commands.AfterRoomRead = () => clock.SetLocal(localDay.AddHours(14).AddMinutes(31));
+        var payload = Request();
+        payload["date"] = localDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        payload["startTime"] = "14:30";
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+        Assert.False(await db.Bookings.AnyAsync(booking => booking.RoomId == room.Id));
+    }
+
+    [Theory]
+    [InlineData("14:00", "15:30", true)]
+    [InlineData("13:30", "14:30", true)]
+    [InlineData("15:00", "16:00", true)]
+    [InlineData("13:00", "17:00", true)]
+    [InlineData("14:30", "15:00", true)]
+    [InlineData("13:00", "14:00", false)]
+    [InlineData("15:30", "16:30", false)]
+    public async Task OverlapsConflictAndAdjacentIntervalsSucceed(string start, string end, bool conflicts)
+    {
+        await using var db = CreateDbContext();
+        db.Bookings.Add(new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(14, 0), EndTime = new(15, 30) });
+        await db.SaveChangesAsync();
+        var payload = Request();
+        payload["startTime"] = start;
+        payload["endTime"] = end;
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var count = await db.Bookings.CountAsync(booking => booking.RoomId == room.Id);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(conflicts ? HttpStatusCode.Conflict : HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(conflicts ? 1 : 2, count);
+        if (conflicts)
+        {
+            Assert.Equal("BOOKING_CONFLICT", body.RootElement.GetProperty("code").GetString());
+            Assert.Equal(room.Id, body.RootElement.GetProperty("details").GetProperty("roomId").GetInt32());
+            Assert.Equal(DateText, body.RootElement.GetProperty("details").GetProperty("date").GetString());
+            Assert.Equal(start, body.RootElement.GetProperty("details").GetProperty("startTime").GetString());
+            Assert.Equal(end, body.RootElement.GetProperty("details").GetProperty("endTime").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task CancelledBookingDoesNotBlockCreation()
+    {
+        await using var db = CreateDbContext();
+        db.Bookings.Add(new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(14, 0), EndTime = new(15, 30), Status = "cancelled" });
+        await db.SaveChangesAsync();
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", Request());
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(2, await db.Bookings.CountAsync(booking => booking.RoomId == room.Id));
+    }
+
+    [Fact]
+    public async Task ConcurrentRequestsAllowOnlyOneOverlappingBooking()
+    {
+        var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+        commands.BeforeInsert = async cancellationToken =>
+        {
+            if (Interlocked.Increment(ref arrivals) == 2)
+                bothReady.TrySetResult();
+            await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+
+        var responses = await Task.WhenAll(client.PostAsJsonAsync("/api/bookings", Request()), client.PostAsJsonAsync("/api/bookings", Request()));
+        var statuses = responses.Select(response => response.StatusCode).ToArray();
+        foreach (var response in responses)
+            response.Dispose();
+        await using var db = CreateDbContext();
+        var count = await db.Bookings.CountAsync(booking => booking.RoomId == room.Id);
+
+        Assert.Single(statuses, status => status == HttpStatusCode.Created);
+        Assert.Single(statuses, status => status == HttpStatusCode.Conflict);
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public async Task MissingRoomReturnsNotFound()
+    {
+        var payload = Request();
+        payload["roomId"] = int.MaxValue;
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", payload);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("ROOM_NOT_FOUND", error!.Code);
+    }
+
+    [Fact]
+    public async Task RoomDeletedImmediatelyBeforeInsertReturnsNotFound()
+    {
+        commands.BeforeInsert = async cancellationToken =>
+        {
+            await using var db = CreateDbContext();
+            await db.Rooms.Where(item => item.Id == room.Id).ExecuteDeleteAsync(cancellationToken);
+        };
+
+        using var response = await client.PostAsJsonAsync("/api/bookings", Request());
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        await using var database = CreateDbContext();
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("ROOM_NOT_FOUND", error!.Code);
+        Assert.False(await database.Bookings.AnyAsync(booking => booking.RoomId == room.Id));
+    }
+
+    [Fact]
+    public async Task DeletedUserReturnsUnauthorized()
+    {
+        await using var db = CreateDbContext();
+        await db.RefreshTokens.Where(token => token.UserId == user.Id).ExecuteDeleteAsync();
+        await db.Users.Where(item => item.Id == user.Id).ExecuteDeleteAsync();
+
+        using var creation = await client.PostAsJsonAsync("/api/bookings", Request());
+        using var mine = await client.GetAsync("/api/bookings/my");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, creation.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, mine.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdminCannotCreateOrReadPersonalBookings(bool personalList)
+    {
+        await using var db = CreateDbContext();
+        await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        await LoginAsync();
+
+        using var response = personalList ? await client.GetAsync("/api/bookings/my") : await client.PostAsJsonAsync("/api/bookings", Request());
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("FORBIDDEN", error!.Code);
+        Assert.False(await db.Bookings.AnyAsync(booking => booking.RoomId == room.Id));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingTokenReturnsUnauthorized(bool personalList)
+    {
+        client.DefaultRequestHeaders.Authorization = null;
+
+        using var response = personalList ? await client.GetAsync("/api/bookings/my") : await client.PostAsJsonAsync("/api/bookings", Request());
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("UNAUTHORIZED", error!.Code);
+    }
+
+    [Theory]
+    [InlineData(null, 2)]
+    [InlineData("active", 1)]
+    [InlineData("cancelled", 1)]
+    public async Task PersonalListFiltersOwnerAndStatusAndJoinsCurrentNames(string? status, int expectedCount)
+    {
+        var other = await AddUserAsync();
+        await using var db = CreateDbContext();
+        db.Bookings.AddRange(
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(14, 0), EndTime = new(15, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date.AddDays(-2), StartTime = new(9, 0), EndTime = new(10, 0), Status = "cancelled" },
+            new Booking { UserId = other.Id, RoomId = room.Id, Date = date, StartTime = new(16, 0), EndTime = new(17, 0) });
+        await db.SaveChangesAsync();
+        await db.Rooms.Where(item => item.Id == room.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Name, "renamed_" + suffix));
+        await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.DisplayName, "Renamed User"));
+        var path = status is null ? "/api/bookings/my" : "/api/bookings/my?status=" + status;
+
+        var result = await client.GetFromJsonAsync<BookingResponse[]>(path);
+        var reads = commands.BookingReads;
+
+        Assert.Equal(expectedCount, result!.Length);
+        Assert.All(result, booking => Assert.Equal(user.Id, booking.UserId));
+        Assert.All(result, booking => Assert.Equal("renamed_" + suffix, booking.RoomName));
+        Assert.All(result, booking => Assert.Equal("Renamed User", booking.UserDisplayName));
+        if (status is not null)
+            Assert.All(result, booking => Assert.Equal(status, booking.Status));
+        Assert.Equal(result.OrderBy(booking => booking.Date).ThenBy(booking => booking.StartTime).ThenBy(booking => booking.Id), result);
+        Assert.Equal(1, reads);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("unknown")]
+    [InlineData("Active")]
+    public async Task InvalidStatusReturnsValidationError(string status)
+    {
+        var path = "/api/bookings/my?status=" + status;
+
+        using var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
+    [Fact]
+    public async Task PersonalListWithoutBookingsReturnsEmptyArray()
+    {
+        var path = "/api/bookings/my";
+
+        var result = await client.GetFromJsonAsync<BookingResponse[]>(path);
+
+        Assert.Empty(result!);
+    }
+
+    [Fact]
+    public async Task SwaggerDocumentsBookingRoutesAndBearerAccess()
+    {
+        var path = "/swagger/v1/swagger.json";
+
+        using var schema = JsonDocument.Parse(await client.GetStringAsync(path));
+        var creation = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings").GetProperty("post");
+        var mine = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings/my").GetProperty("get");
+
+        Assert.True(creation.GetProperty("responses").TryGetProperty("201", out _));
+        Assert.True(creation.GetProperty("responses").TryGetProperty("409", out _));
+        Assert.True(creation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(mine.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("CreateBookingRequest");
+        Assert.True(!requestSchema.TryGetProperty("additionalProperties", out var additional) || additional.ValueKind == JsonValueKind.True);
+    }
+
+    private Dictionary<string, object?> Request() => new()
+    {
+        ["roomId"] = room.Id, ["date"] = DateText, ["startTime"] = "14:00", ["endTime"] = "15:30", ["comment"] = "Test booking"
+    };
+
+    private async Task<User> AddUserAsync()
+    {
+        await using var db = CreateDbContext();
+        var added = new User { Login = "booking_user_" + Guid.NewGuid().ToString("N"), DisplayName = "Booking User", Role = "student" };
+        logins.Add(added.Login);
+        added.PasswordHash = new PasswordHasher<User>().HashPassword(added, "password");
+        db.Users.Add(added);
+        await db.SaveChangesAsync();
+        return added;
+    }
+
+    private async Task LoginAsync()
+    {
+        using var response = await client.PostAsJsonAsync("/api/auth/login", new { login = user.Login, password = "password" });
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<AuthResponse>();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", result!.Token);
+    }
+
+    private CampusFlowDbContext CreateDbContext() => new(new DbContextOptionsBuilder<CampusFlowDbContext>().UseNpgsql(connection).Options);
+
+    private sealed class TestClock : TimeProvider
+    {
+        private DateTimeOffset now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => now;
+        public void SetLocal(DateTime local) => now = new DateTimeOffset(local).ToUniversalTime();
+    }
+
+    private sealed class BookingCommands : DbCommandInterceptor
+    {
+        public Func<CancellationToken, Task>? BeforeInsert { get; set; }
+        public Action? AfterRoomRead { get; set; }
+        public int BookingReads;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FROM \"Bookings\""))
+                Interlocked.Increment(ref BookingReads);
+            if (command.CommandText.Contains("INSERT INTO \"Bookings\"") && BeforeInsert is not null)
+                await BeforeInsert(cancellationToken);
+            return result;
+        }
+
+        public override ValueTask<DbDataReader> ReaderExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
+            DbDataReader result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FROM \"Rooms\""))
+                AfterRoomRead?.Invoke();
+            return ValueTask.FromResult(result);
+        }
+    }
+}

@@ -11,7 +11,6 @@ public sealed class RoomSearchOperationFilter : IOperationFilter
     {
         if (context.MethodInfo.DeclaringType != typeof(RoomsController))
             return;
-        operation.Security = [new OpenApiSecurityRequirement { [new OpenApiSecuritySchemeReference("Bearer", context.Document)] = [] }];
         foreach (var parameter in (operation.Parameters ?? []).OfType<OpenApiParameter>())
         {
             if (parameter.Name == "minCapacity")
