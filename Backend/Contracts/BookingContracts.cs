@@ -56,3 +56,5 @@ public sealed class MyBookingsQuery : IValidatableObject
 
 public sealed record BookingResponse(int Id, int RoomId, string RoomName, int UserId, string UserDisplayName,
     string Date, string StartTime, string EndTime, string Status, string? Comment);
+
+public sealed record BookingCancellationResponse(int Id, string Status);

@@ -12,6 +12,24 @@ public sealed record BookingCreationResult(BookingResponse? Booking, string? Err
 
 public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
 {
+    public async Task<string?> CancelAsync(int userId, int bookingId, CancellationToken cancellationToken)
+    {
+        if (!await db.Users.AnyAsync(user => user.Id == userId, cancellationToken))
+            return "UNAUTHORIZED";
+        var updated = await db.Bookings
+            .Where(booking => booking.Id == bookingId && booking.UserId == userId && booking.Status == "active")
+            .ExecuteUpdateAsync(update => update.SetProperty(booking => booking.Status, "cancelled"), cancellationToken);
+        if (updated == 1)
+            return null;
+        var booking = await db.Bookings.AsNoTracking().Where(booking => booking.Id == bookingId)
+            .Select(booking => new { booking.UserId }).SingleOrDefaultAsync(cancellationToken);
+        if (booking is null)
+            return "BOOKING_NOT_FOUND";
+        if (booking.UserId != userId)
+            return "FORBIDDEN";
+        return "ALREADY_CANCELLED";
+    }
+
     public async Task<BookingCreationResult> CreateAsync(int userId, CreateBookingRequest request, CancellationToken cancellationToken)
     {
         var user = await db.Users.AsNoTracking().Where(user => user.Id == userId)

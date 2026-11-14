@@ -352,9 +352,11 @@ public sealed class BookingTests : IAsyncLifetime
 
         using var creation = await client.PostAsJsonAsync("/api/bookings", Request());
         using var mine = await client.GetAsync("/api/bookings/my");
+        using var cancellation = await client.DeleteAsync("/api/bookings/0");
 
         Assert.Equal(HttpStatusCode.Unauthorized, creation.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, mine.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, cancellation.StatusCode);
     }
 
     [Theory]
@@ -451,13 +453,173 @@ public sealed class BookingTests : IAsyncLifetime
         using var schema = JsonDocument.Parse(await client.GetStringAsync(path));
         var creation = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings").GetProperty("post");
         var mine = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings/my").GetProperty("get");
+        var cancellation = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings/{id}").GetProperty("delete");
 
         Assert.True(creation.GetProperty("responses").TryGetProperty("201", out _));
         Assert.True(creation.GetProperty("responses").TryGetProperty("409", out _));
         Assert.True(creation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(mine.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(cancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(cancellation.GetProperty("responses").TryGetProperty("200", out _));
+        Assert.True(cancellation.GetProperty("responses").TryGetProperty("409", out _));
         var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("CreateBookingRequest");
         Assert.True(!requestSchema.TryGetProperty("additionalProperties", out var additional) || additional.ValueKind == JsonValueKind.True);
+    }
+
+    [Fact]
+    public async Task CancellationPreservesHistoryAndReleasesTimeForNewBooking()
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+
+        using var response = await client.DeleteAsync($"/api/bookings/{created.Id}");
+        var cancelled = await response.Content.ReadFromJsonAsync<BookingCancellationResponse>();
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var mine = await client.GetFromJsonAsync<BookingResponse[]>("/api/bookings/my?status=cancelled");
+        var free = await client.GetFromJsonAsync<RoomFreeSlotsResponse>($"/api/rooms/{room.Id}/free-slots?date={DateText}");
+        var search = await client.GetFromJsonAsync<AvailableRoomsResponse>($"/api/rooms?date={DateText}&startTime=14:00&endTime=15:30");
+        using var replacement = await client.PostAsJsonAsync("/api/bookings", Request());
+        await using var db = CreateDbContext();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(booking => booking.Id == created.Id);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(new BookingCancellationResponse(created.Id, "cancelled"), cancelled);
+        Assert.Equal(new[] { "id", "status" }, body.RootElement.EnumerateObject().Select(property => property.Name).Order().ToArray());
+        Assert.Contains(mine!, booking => booking.Id == created.Id && booking.Status == "cancelled");
+        Assert.Equal([new FreeSlotResponse("09:00", "18:00")], free!.FreeSlots);
+        Assert.Contains(search!.Rooms, item => item.Id == room.Id);
+        Assert.Equal(HttpStatusCode.Created, replacement.StatusCode);
+        Assert.Equal("cancelled", saved.Status);
+        Assert.Equal(created.Comment, saved.Comment);
+        Assert.Equal(user.Id, saved.UserId);
+        Assert.Equal(room.Id, saved.RoomId);
+        Assert.Equal(date, saved.Date);
+        Assert.Equal(new TimeOnly(14, 0), saved.StartTime);
+        Assert.Equal(new TimeOnly(15, 30), saved.EndTime);
+        Assert.Equal(2, await db.Bookings.CountAsync(booking => booking.RoomId == room.Id));
+    }
+
+    [Theory]
+    [InlineData("active")]
+    [InlineData("cancelled")]
+    public async Task ForeignBookingReturnsForbiddenBeforeStatusCheck(string status)
+    {
+        var other = await AddUserAsync();
+        await using var db = CreateDbContext();
+        var booking = new Booking { UserId = other.Id, RoomId = room.Id, Date = date, StartTime = new(14, 0), EndTime = new(15, 30), Status = status };
+        db.Bookings.Add(booking);
+        await db.SaveChangesAsync();
+
+        using var response = await client.DeleteAsync($"/api/bookings/{booking.Id}");
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == booking.Id);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("FORBIDDEN", error!.Code);
+        Assert.Equal(status, saved.Status);
+        Assert.Equal(other.Id, saved.UserId);
+    }
+
+    [Fact]
+    public async Task RepeatedCancellationReturnsAlreadyCancelled()
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+
+        using var first = await client.DeleteAsync($"/api/bookings/{created.Id}");
+        using var repeated = await client.DeleteAsync($"/api/bookings/{created.Id}");
+        var error = await repeated.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var rows = await db.Bookings.AsNoTracking().Where(booking => booking.RoomId == room.Id).ToListAsync();
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, repeated.StatusCode);
+        Assert.Equal("ALREADY_CANCELLED", error!.Code);
+        Assert.Single(rows);
+        Assert.Equal("cancelled", rows[0].Status);
+    }
+
+    [Fact]
+    public async Task ConcurrentCancellationSucceedsOnlyOnce()
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+        commands.BeforeCancellation = async cancellationToken =>
+        {
+            if (Interlocked.Increment(ref arrivals) == 2)
+                bothReady.TrySetResult();
+            await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+
+        var responses = await Task.WhenAll(client.DeleteAsync($"/api/bookings/{created.Id}"), client.DeleteAsync($"/api/bookings/{created.Id}"));
+        var statuses = responses.Select(response => response.StatusCode).ToArray();
+        var errors = new List<string>();
+        foreach (var response in responses)
+        {
+            if (response.StatusCode == HttpStatusCode.Conflict)
+                errors.Add((await response.Content.ReadFromJsonAsync<ApiError>())!.Code);
+            response.Dispose();
+        }
+        await using var db = CreateDbContext();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(booking => booking.Id == created.Id);
+
+        Assert.Single(statuses, status => status == HttpStatusCode.OK);
+        Assert.Single(statuses, status => status == HttpStatusCode.Conflict);
+        Assert.Equal(new[] { "ALREADY_CANCELLED" }, errors);
+        Assert.Equal("cancelled", saved.Status);
+    }
+
+    [Theory]
+    [InlineData("0", HttpStatusCode.NotFound, "BOOKING_NOT_FOUND")]
+    [InlineData("-1", HttpStatusCode.NotFound, "BOOKING_NOT_FOUND")]
+    [InlineData("2147483647", HttpStatusCode.NotFound, "BOOKING_NOT_FOUND")]
+    [InlineData("text", HttpStatusCode.BadRequest, "VALIDATION_ERROR")]
+    public async Task InvalidCancellationIdReturnsContractError(string id, HttpStatusCode status, string code)
+    {
+        var path = "/api/bookings/" + id;
+
+        using var response = await client.DeleteAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(status, response.StatusCode);
+        Assert.Equal(code, error!.Code);
+    }
+
+    [Fact]
+    public async Task AdminCannotCancelThroughStudentEndpoint()
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        await using var db = CreateDbContext();
+        await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        await LoginAsync();
+
+        using var response = await client.DeleteAsync($"/api/bookings/{created.Id}");
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(booking => booking.Id == created.Id);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("FORBIDDEN", error!.Code);
+        Assert.Equal("active", saved.Status);
+    }
+
+    [Fact]
+    public async Task CancellationWithoutTokenReturnsUnauthorized()
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        client.DefaultRequestHeaders.Authorization = null;
+
+        using var response = await client.DeleteAsync($"/api/bookings/{created.Id}");
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(booking => booking.Id == created.Id);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("UNAUTHORIZED", error!.Code);
+        Assert.Equal("active", saved.Status);
     }
 
     private Dictionary<string, object?> Request() => new()
@@ -496,8 +658,17 @@ public sealed class BookingTests : IAsyncLifetime
     private sealed class BookingCommands : DbCommandInterceptor
     {
         public Func<CancellationToken, Task>? BeforeInsert { get; set; }
+        public Func<CancellationToken, Task>? BeforeCancellation { get; set; }
         public Action? AfterRoomRead { get; set; }
         public int BookingReads;
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.StartsWith("UPDATE \"Bookings\"", StringComparison.Ordinal) && BeforeCancellation is not null)
+                await BeforeCancellation(cancellationToken);
+            return result;
+        }
 
         public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
             CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
