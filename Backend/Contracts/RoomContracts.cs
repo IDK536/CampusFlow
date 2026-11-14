@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using CampusFlow.Api.Validation;
+using System.Text.Json.Serialization;
 
 namespace CampusFlow.Api.Contracts;
 
@@ -12,9 +13,37 @@ public sealed record AvailableRoomResponse(int Id, string Name, string Building,
 public sealed record AvailableRoomsResponse(string Date, AvailableRoomResponse[] Rooms);
 public sealed record RoomFreeSlotsResponse(int RoomId, string Date, FreeSlotResponse[] FreeSlots);
 
+[JsonNumberHandling(JsonNumberHandling.Strict)]
+public sealed class RoomWriteRequest : IValidatableObject
+{
+    [Required(ErrorMessage = "Название обязательно")]
+    public string? Name { get; init; }
+
+    [Required(ErrorMessage = "Корпус обязателен")]
+    [RegularExpression("^[A-D]$", ErrorMessage = "Корпус должен быть A, B, C или D")]
+    public string? Building { get; init; }
+
+    [Required(ErrorMessage = "Этаж обязателен")]
+    [Range(1, int.MaxValue, ErrorMessage = "Этаж должен быть не меньше 1")]
+    public int? Floor { get; init; }
+
+    [Required(ErrorMessage = "Вместимость обязательна")]
+    [Range(1, int.MaxValue, ErrorMessage = "Вместимость должна быть положительной")]
+    public int? Capacity { get; init; }
+
+    [Required(ErrorMessage = "Массив оборудования обязателен")]
+    public string[]? Equipment { get; init; }
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (Equipment is not null && Equipment.Any(item => !RoomSearchQuery.EquipmentNames.Contains(item, StringComparer.Ordinal)))
+            yield return new ValidationResult("Оборудование должно содержать только projector, whiteboard, computers, audio, video", [nameof(Equipment)]);
+    }
+}
+
 public sealed class RoomSearchQuery : IValidatableObject
 {
-    private static readonly string[] EquipmentNames = ["projector", "whiteboard", "computers", "audio", "video"];
+    internal static readonly string[] EquipmentNames = ["projector", "whiteboard", "computers", "audio", "video"];
 
     [DisplayFormat(ConvertEmptyStringToNull = false)]
     [FromQuery(Name = "building")]

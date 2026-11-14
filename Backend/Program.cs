@@ -4,6 +4,8 @@ using CampusFlow.Api.Configuration;
 using CampusFlow.Api.Contracts;
 using CampusFlow.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -63,7 +65,10 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
             }
         };
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options => options.AddPolicy(AdminAccessRequirement.Policy,
+    policy => policy.RequireAuthenticatedUser().RequireRole("admin").AddRequirements(new AdminAccessRequirement())));
+builder.Services.AddScoped<IAuthorizationHandler, AdminAuthorizationHandler>();
+builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AdminAuthorizationResultHandler>();
 var allowedOrigins = builder.Configuration.GetSection("Auth:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
 {
@@ -102,6 +107,7 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapFallback("/api/admin/{**path}", () => Results.NotFound()).RequireAuthorization(AdminAccessRequirement.Policy);
 await app.RunAsync();
 
 

@@ -8,7 +8,7 @@ public sealed class BookingRequestSchemaFilter : ISchemaFilter
 {
     public void Apply(IOpenApiSchema schema, SchemaFilterContext context)
     {
-        if (context.Type == typeof(CreateBookingRequest) && schema is OpenApiSchema requestSchema)
+        if ((context.Type == typeof(CreateBookingRequest) || context.Type == typeof(RoomWriteRequest)) && schema is OpenApiSchema requestSchema)
             requestSchema.AdditionalPropertiesAllowed = true;
     }
 }

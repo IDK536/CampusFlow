@@ -501,6 +501,9 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(adminList.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(adminCancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(adminCancellation.GetProperty("responses").TryGetProperty("409", out _));
+        Assert.True(adminList.GetProperty("responses").TryGetProperty("404", out _));
+        Assert.False(adminList.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.False(adminCancellation.GetProperty("responses").TryGetProperty("403", out _));
         Assert.Equal(new[] { "date", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
             .EnumerateArray().Select(parameter => parameter.GetProperty("name").GetString()).Order().ToArray());
         var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("CreateBookingRequest");
@@ -756,8 +759,8 @@ public sealed class BookingTests : IAsyncLifetime
         await using var db = CreateDbContext();
         var saved = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == created.Id);
 
-        Assert.Equal(anonymous ? HttpStatusCode.Unauthorized : HttpStatusCode.Forbidden, list.StatusCode);
-        Assert.Equal(anonymous ? HttpStatusCode.Unauthorized : HttpStatusCode.Forbidden, cancellation.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, list.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, cancellation.StatusCode);
         Assert.Equal("active", saved.Status);
     }
 
@@ -814,8 +817,8 @@ public sealed class BookingTests : IAsyncLifetime
         using var list = await client.GetAsync("/api/admin/bookings");
         using var cancellation = await client.DeleteAsync("/api/admin/bookings/0");
 
-        Assert.Equal(HttpStatusCode.Unauthorized, list.StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, cancellation.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, list.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, cancellation.StatusCode);
     }
 
     private async Task<User> LoginAsAdminAsync()

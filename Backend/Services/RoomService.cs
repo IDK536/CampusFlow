@@ -1,12 +1,45 @@
 using System.Globalization;
 using CampusFlow.Api.Contracts;
 using CampusFlow.Api.Data;
+using CampusFlow.Api.Models;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace CampusFlow.Api.Services;
 
+public sealed record RoomWriteResult(RoomResponse? Room, string? ErrorCode = null);
+
 public sealed class RoomService(CampusFlowDbContext db)
 {
+    public async Task<RoomWriteResult> SaveAsync(int? id, RoomWriteRequest request, CancellationToken cancellationToken)
+    {
+        if (id is <= 0)
+            return new(null, "ROOM_NOT_FOUND");
+        var room = new Room
+        {
+            Id = id ?? 0, Name = request.Name!.Trim(), Building = request.Building!, Floor = request.Floor!.Value,
+            Capacity = request.Capacity!.Value, Equipment = request.Equipment!.Distinct(StringComparer.Ordinal).ToArray()
+        };
+        if (id.HasValue)
+            db.Entry(room).State = EntityState.Modified;
+        else
+            db.Rooms.Add(room);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return new(null, "ROOM_NOT_FOUND");
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+            { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: "IX_Rooms_Name" })
+        {
+            return new(null, "DUPLICATE_NAME");
+        }
+        return new(new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment));
+    }
+
     public async Task<RoomResponse[]> GetRoomsAsync(RoomSearchQuery filter, CancellationToken cancellationToken)
     {
         var query = db.Rooms.AsNoTracking();
