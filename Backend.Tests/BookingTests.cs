@@ -288,28 +288,54 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal(2, await db.Bookings.CountAsync(booking => booking.RoomId == room.Id));
     }
 
-    [Fact]
-    public async Task ConcurrentRequestsAllowOnlyOneOverlappingBooking()
+    [Theory]
+    [InlineData(2, true)]
+    [InlineData(8, true)]
+    [InlineData(2, false)]
+    [InlineData(8, false)]
+    public async Task ConcurrentRequestsPreserveBookingConstraints(int requestCount, bool overlapping)
     {
         var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var arrivals = 0;
         commands.BeforeInsert = async cancellationToken =>
         {
-            if (Interlocked.Increment(ref arrivals) == 2)
+            if (Interlocked.Increment(ref arrivals) == requestCount)
                 bothReady.TrySetResult();
             await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         };
+        var payloads = Enumerable.Range(0, requestCount).Select(index =>
+        {
+            var payload = Request();
+            if (!overlapping)
+            {
+                payload["startTime"] = new TimeOnly(9, 0).AddMinutes(index * 30).ToString("HH:mm", CultureInfo.InvariantCulture);
+                payload["endTime"] = new TimeOnly(9, 0).AddMinutes((index + 1) * 30).ToString("HH:mm", CultureInfo.InvariantCulture);
+            }
+            return payload;
+        }).ToArray();
 
-        var responses = await Task.WhenAll(client.PostAsJsonAsync("/api/bookings", Request()), client.PostAsJsonAsync("/api/bookings", Request()));
+        var responses = await Task.WhenAll(payloads.Select(payload => client.PostAsJsonAsync("/api/bookings", payload)));
         var statuses = responses.Select(response => response.StatusCode).ToArray();
+        var ids = new List<int>();
+        var errors = new List<string>();
         foreach (var response in responses)
+        {
+            if (response.StatusCode == HttpStatusCode.Created)
+                ids.Add((await response.Content.ReadFromJsonAsync<BookingResponse>())!.Id);
+            if (response.StatusCode == HttpStatusCode.Conflict)
+                errors.Add((await response.Content.ReadFromJsonAsync<ApiError>())!.Code);
             response.Dispose();
+        }
         await using var db = CreateDbContext();
-        var count = await db.Bookings.CountAsync(booking => booking.RoomId == room.Id);
+        var saved = await db.Bookings.AsNoTracking().Where(booking => booking.RoomId == room.Id).ToListAsync();
+        var expectedCount = overlapping ? 1 : requestCount;
 
-        Assert.Single(statuses, status => status == HttpStatusCode.Created);
-        Assert.Single(statuses, status => status == HttpStatusCode.Conflict);
-        Assert.Equal(1, count);
+        Assert.Equal(expectedCount, statuses.Count(status => status == HttpStatusCode.Created));
+        Assert.Equal(requestCount - expectedCount, statuses.Count(status => status == HttpStatusCode.Conflict));
+        Assert.All(errors, code => Assert.Equal("BOOKING_CONFLICT", code));
+        Assert.Equal(expectedCount, saved.Count);
+        Assert.Equal(ids.Order(), saved.Select(booking => booking.Id).Order());
+        Assert.All(saved, booking => Assert.Equal("active", booking.Status));
     }
 
     [Fact]
@@ -325,21 +351,29 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal("ROOM_NOT_FOUND", error!.Code);
     }
 
-    [Fact]
-    public async Task RoomDeletedImmediatelyBeforeInsertReturnsNotFound()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task EntityDeletedImmediatelyBeforeInsertReturnsContractError(bool deleteRoom)
     {
         commands.BeforeInsert = async cancellationToken =>
         {
             await using var db = CreateDbContext();
-            await db.Rooms.Where(item => item.Id == room.Id).ExecuteDeleteAsync(cancellationToken);
+            if (deleteRoom)
+                await db.Rooms.Where(item => item.Id == room.Id).ExecuteDeleteAsync(cancellationToken);
+            else
+            {
+                await db.RefreshTokens.Where(token => token.UserId == user.Id).ExecuteDeleteAsync(cancellationToken);
+                await db.Users.Where(item => item.Id == user.Id).ExecuteDeleteAsync(cancellationToken);
+            }
         };
 
         using var response = await client.PostAsJsonAsync("/api/bookings", Request());
         var error = await response.Content.ReadFromJsonAsync<ApiError>();
         await using var database = CreateDbContext();
 
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Equal("ROOM_NOT_FOUND", error!.Code);
+        Assert.Equal(deleteRoom ? HttpStatusCode.NotFound : HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(deleteRoom ? "ROOM_NOT_FOUND" : "UNAUTHORIZED", error!.Code);
         Assert.False(await database.Bookings.AnyAsync(booking => booking.RoomId == room.Id));
     }
 

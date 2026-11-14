@@ -51,27 +51,26 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
             EndTime = TimeOnly.ParseExact(request.EndTime!, "HH:mm", CultureInfo.InvariantCulture),
             Status = "active", Comment = request.Comment
         };
-        db.Bookings.Add(booking);
         try
         {
-            await db.SaveChangesAsync(cancellationToken);
+            var ids = await db.Database.SqlQuery<int>($"""
+                INSERT INTO "Bookings" ("RoomId", "UserId", "Date", "StartTime", "EndTime", "Status", "Comment")
+                VALUES ({booking.RoomId}, {booking.UserId}, {booking.Date}, {booking.StartTime}, {booking.EndTime}, {booking.Status}, {booking.Comment})
+                ON CONFLICT ON CONSTRAINT "Bookings_NoOverlap" DO NOTHING
+                RETURNING "Id" AS "Value"
+                """).ToListAsync(cancellationToken);
+            if (ids.Count == 0)
+                return new(null, "BOOKING_CONFLICT");
+            booking.Id = ids.Single();
         }
-        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
-            { SqlState: PostgresErrorCodes.ExclusionViolation, ConstraintName: "Bookings_NoOverlap" })
-        {
-            db.Entry(booking).State = EntityState.Detached;
-            return new(null, "BOOKING_CONFLICT");
-        }
-        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        catch (PostgresException exception) when (exception is
             { SqlState: PostgresErrorCodes.ForeignKeyViolation, ConstraintName: "FK_Bookings_Rooms_RoomId" })
         {
-            db.Entry(booking).State = EntityState.Detached;
             return new(null, "ROOM_NOT_FOUND");
         }
-        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        catch (PostgresException exception) when (exception is
             { SqlState: PostgresErrorCodes.ForeignKeyViolation, ConstraintName: "FK_Bookings_Users_UserId" })
         {
-            db.Entry(booking).State = EntityState.Detached;
             return new(null, "UNAUTHORIZED");
         }
         return new(new BookingResponse(booking.Id, booking.RoomId, room.Name, userId, user.DisplayName,
