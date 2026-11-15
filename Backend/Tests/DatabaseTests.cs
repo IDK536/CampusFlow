@@ -16,7 +16,7 @@ public sealed class DatabaseTests : IAsyncLifetime
     {
         await using var db = CreateDbContext();
         await db.Database.OpenConnectionAsync();
-        await db.Database.MigrateAsync();
+        await TestDatabase.MigrateAsync(db);
     }
 
     public async Task DisposeAsync()

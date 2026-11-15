@@ -41,7 +41,7 @@ public sealed class AuthTests : IAsyncLifetime
             throw new InvalidOperationException("Auth tests require campusflow_test.");
         await using var db = CreateDbContext();
         await db.Database.OpenConnectionAsync();
-        await db.Database.MigrateAsync();
+        await TestDatabase.MigrateAsync(db);
         var user = new User { Login = login, DisplayName = "Auth Test", Role = "student" };
         user.PasswordHash = new PasswordHasher<User>().HashPassword(user, Password);
         db.Users.Add(user);

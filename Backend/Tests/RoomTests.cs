@@ -45,7 +45,7 @@ public sealed class RoomTests : IAsyncLifetime
             throw new InvalidOperationException("Room tests require campusflow_test.");
         await using var db = CreateDbContext();
         await db.Database.OpenConnectionAsync();
-        await db.Database.MigrateAsync();
+        await TestDatabase.MigrateAsync(db);
         user = new User { Login = "rooms_" + suffix, DisplayName = "Room Test", Role = "student" };
         user.PasswordHash = new PasswordHasher<User>().HashPassword(user, "password");
         rooms =

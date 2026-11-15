@@ -42,7 +42,7 @@ public sealed class BookingTests : IAsyncLifetime
             throw new InvalidOperationException("Booking tests require campusflow_test.");
         await using var db = CreateDbContext();
         await db.Database.OpenConnectionAsync();
-        await db.Database.MigrateAsync();
+        await TestDatabase.MigrateAsync(db);
         user = await AddUserAsync();
         date = DateOnly.FromDateTime(clock.GetLocalNow().DateTime).AddDays(1);
         room = new Room { Name = "booking_" + suffix, Building = "A", Floor = 1, Capacity = 20, Equipment = ["projector"] };
