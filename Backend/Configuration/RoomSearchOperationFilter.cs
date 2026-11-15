@@ -22,7 +22,7 @@ public sealed class RoomSearchOperationFilter : IOperationFilter
         }
         if (context.ApiDescription.RelativePath != "api/rooms")
             return;
-        operation.Description = "Без date возвращает массив Room. С date возвращает {date, serverTime, utcOffset, rooms} со свободными интервалами. serverTime — UTC, utcOffset — смещение сервера в минутах. floor — точный этаж >= 1. startTime и endTime передаются вместе с date и отбирают аудитории, свободные на весь интервал. С minDuration (минуты >= 30, кратные 30) ищет непрерывное окно внутри интервала и возвращает подходящие окна, обрезанные по его границам. Прошедшие часы не исключаются.";
+        operation.Description = "q — полное название аудитории без учёта регистра, пробелы по краям удаляются; пустой q не фильтрует. Поиска по подстроке нет. Без date возвращает массив Room. С date возвращает {date, serverTime, utcOffset, rooms} со свободными интервалами. serverTime — UTC, utcOffset — смещение сервера в минутах. floor — точный этаж >= 1. startTime и endTime передаются вместе с date и отбирают аудитории, свободные на весь интервал. С minDuration (минуты >= 30, кратные 30) ищет непрерывное окно внутри интервала и возвращает подходящие окна, обрезанные по его границам. Прошедшие часы не исключаются.";
         var schema = new OpenApiSchema
         {
             OneOf =

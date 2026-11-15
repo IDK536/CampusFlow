@@ -43,6 +43,10 @@ public sealed class RoomWriteRequest : IValidatableObject
 
 public sealed class RoomSearchQuery : IValidatableObject
 {
+    [FromQuery(Name = "q")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Q { get; init; }
+
     internal static readonly string[] EquipmentNames = ["projector", "whiteboard", "computers", "audio", "video"];
 
     [DisplayFormat(ConvertEmptyStringToNull = false)]

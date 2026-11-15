@@ -148,6 +148,52 @@ public sealed class RoomTests : IAsyncLifetime
         Assert.Equal(expected, result!.Where(room => ownIds.Contains(room.Id)).Select(room => room.Id).Order());
     }
 
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("case", false)]
+    [InlineData("spaces", false)]
+    [InlineData("partial", false)]
+    [InlineData("wildcard", false)]
+    [InlineData("empty", false)]
+    [InlineData("blank", false)]
+    [InlineData("exact", true)]
+    [InlineData("conflict", true)]
+    public async Task RoomQMatchesFullLiteralNameAndCombinesFilters(string mode, bool withDate)
+    {
+        var name = "Аудитория_%\\" + suffix;
+        await using var db = CreateDbContext();
+        await db.Rooms.Where(item => item.Id == rooms[0].Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Name, name));
+        var q = mode switch
+        {
+            "case" => name.ToUpperInvariant(),
+            "spaces" => "  " + name + "  ",
+            "partial" => name[..^1],
+            "wildcard" => "%",
+            "empty" => "",
+            "blank" => "   ",
+            _ => name
+        };
+        var path = "/api/rooms?q=" + Uri.EscapeDataString(q);
+        if (withDate)
+            path += $"&date={DateText}&building=A&floor=1&minCapacity=30&equipment=projector,whiteboard&startTime=10:30&endTime=12:00&minDuration=60";
+        if (mode == "conflict")
+            path = path.Replace("building=A", "building=B");
+        var expected = mode is "partial" or "wildcard" or "conflict" ? []
+            : mode is "empty" or "blank" ? rooms.Select(item => item.Id).Order().ToArray() : new[] { rooms[0].Id };
+        var ownIds = rooms.Select(item => item.Id).ToArray();
+        counter.Reads = 0;
+
+        using var response = await client.GetAsync(path);
+        var result = withDate
+            ? (await response.Content.ReadFromJsonAsync<AvailableRoomsResponse>())!.Rooms.Select(item => item.Id).ToArray()
+            : (await response.Content.ReadFromJsonAsync<RoomResponse[]>())!.Select(item => item.Id).ToArray();
+        var reads = counter.Reads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expected, result.Where(ownIds.Contains).Order());
+        Assert.Equal(withDate ? 2 : 1, reads);
+    }
+
     [Fact]
     public async Task AvailabilityUsesTwoQueriesAndMaximalIntervals()
     {

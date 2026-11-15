@@ -15,6 +15,6 @@ public sealed class AdminBookingsOperationFilter : IOperationFilter
             if (parameter.Name is "date" or "dateFrom" or "dateTo")
                 parameter.Schema = new OpenApiSchema { Type = JsonSchemaType.String, Format = "date", Pattern = @"^\d{4}-\d{2}-\d{2}$" };
         }
-        operation.Description = "building ограничивает корпус связанной аудитории (A, B, C или D). date выбирает один день. dateFrom/dateTo ограничивают период включительно; каждая граница необязательна, прошлые даты разрешены. Все переданные фильтры применяются вместе. Начало периода позже конца даёт 400.";
+        operation.Description = "q — полное имя пользователя ИЛИ полное название аудитории без учёта регистра, пробелы по краям удаляются; пустой q не фильтрует. По комментарию и подстроке поиска нет. building ограничивает корпус связанной аудитории (A, B, C или D). date выбирает один день. dateFrom/dateTo ограничивают период включительно; каждая граница необязательна, прошлые даты разрешены. Все переданные фильтры применяются вместе. Начало периода позже конца даёт 400.";
     }
 }

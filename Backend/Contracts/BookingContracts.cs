@@ -62,6 +62,10 @@ public sealed record BookingCancellationResponse(int Id, string Status);
 
 public sealed class AdminBookingsQuery : IValidatableObject
 {
+    [FromQuery(Name = "q")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Q { get; init; }
+
     [FromQuery(Name = "building")]
     [DisplayFormat(ConvertEmptyStringToNull = false)]
     public string? Building { get; init; }

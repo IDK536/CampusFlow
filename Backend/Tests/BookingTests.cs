@@ -546,7 +546,7 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(adminList.GetProperty("responses").TryGetProperty("404", out _));
         Assert.False(adminList.GetProperty("responses").TryGetProperty("401", out _));
         Assert.False(adminCancellation.GetProperty("responses").TryGetProperty("403", out _));
-        Assert.Equal(new[] { "building", "date", "dateFrom", "dateTo", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
+        Assert.Equal(new[] { "building", "date", "dateFrom", "dateTo", "q", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
             .EnumerateArray().Select(parameter => parameter.GetProperty("name").GetString()).Order().ToArray());
         Assert.All(adminList.GetProperty("parameters").EnumerateArray()
             .Where(parameter => parameter.GetProperty("name").GetString() is "date" or "dateFrom" or "dateTo"),
@@ -894,6 +894,73 @@ public sealed class BookingTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.NotFound, list.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, cancellation.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("name", "0,1")]
+    [InlineData("room", "0,1,2")]
+    [InlineData("partial-name", "")]
+    [InlineData("partial-room", "")]
+    [InlineData("comment", "")]
+    [InlineData("wildcard", "")]
+    [InlineData("empty", "0,1,2")]
+    [InlineData("blank", "0,1,2")]
+    [InlineData("name-status", "0")]
+    [InlineData("name-user", "0")]
+    [InlineData("name-building", "")]
+    [InlineData("name-date", "")]
+    [InlineData("name-other-user", "")]
+    public async Task AdminQMatchesFullRoomOrUserNameAndCombinesFilters(string mode, string expected)
+    {
+        var other = await AddUserAsync();
+        var third = await AddUserAsync();
+        var name = "Иван_%\\" + suffix;
+        var roomName = "Аудитория_%\\" + suffix;
+        var comment = "Комментарий_" + suffix;
+        await using var db = CreateDbContext();
+        await db.Users.Where(item => item.Id == user.Id || item.Id == other.Id)
+            .ExecuteUpdateAsync(update => update.SetProperty(item => item.DisplayName, name));
+        await db.Rooms.Where(item => item.Id == room.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Name, roomName));
+        var rows = new[]
+        {
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { UserId = other.Id, RoomId = room.Id, Date = date, StartTime = new(10, 0), EndTime = new(11, 0), Status = "cancelled" },
+            new Booking { UserId = third.Id, RoomId = room.Id, Date = date, StartTime = new(11, 0), EndTime = new(12, 0), Comment = comment }
+        };
+        db.Bookings.AddRange(rows);
+        await db.SaveChangesAsync();
+        await LoginAsAdminAsync();
+        var q = mode switch
+        {
+            "room" => "  " + roomName.ToUpperInvariant() + "  ",
+            "partial-name" => name[..^1],
+            "partial-room" => roomName[..^1],
+            "comment" => comment,
+            "wildcard" => "%",
+            "empty" => "",
+            "blank" => "   ",
+            _ => "  " + name.ToUpperInvariant() + "  "
+        };
+        var path = $"/api/admin/bookings?roomId={room.Id}&q=" + Uri.EscapeDataString(q);
+        path += mode switch
+        {
+            "name-status" => "&status=active",
+            "name-user" => $"&userId={user.Id}",
+            "name-building" => "&building=B",
+            "name-date" => "&dateFrom=2000-01-01&dateTo=2000-01-01",
+            "name-other-user" => "&userId=" + third.Id,
+            _ => ""
+        };
+        var expectedIds = expected.Length == 0 ? [] : expected.Split(',').Select(index => rows[int.Parse(index)].Id).ToArray();
+        commands.BookingReads = 0;
+
+        using var response = await client.GetAsync(path);
+        var result = await response.Content.ReadFromJsonAsync<BookingResponse[]>();
+        var reads = commands.BookingReads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expectedIds, result!.Select(item => item.Id));
+        Assert.Equal(1, reads);
     }
 
     [Fact]

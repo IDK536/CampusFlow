@@ -57,6 +57,11 @@ public sealed class RoomService(CampusFlowDbContext db)
     public async Task<RoomResponse[]> GetRoomsAsync(RoomSearchQuery filter, CancellationToken cancellationToken)
     {
         var query = db.Rooms.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(filter.Q))
+        {
+            var name = filter.Q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            query = query.Where(room => EF.Functions.ILike(room.Name, name, "\\"));
+        }
         if (filter.Building is not null)
             query = query.Where(room => room.Building == filter.Building);
         if (filter.MinCapacity is not null)
