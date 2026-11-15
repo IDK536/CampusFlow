@@ -67,9 +67,10 @@ public sealed class AuthController(AuthService auth, IConfiguration configuratio
         Response.Headers.CacheControl = "no-store";
     }
 
-    private static CookieOptions CookieOptions() => new()
+    private CookieOptions CookieOptions() => new()
     {
-        HttpOnly = true, Secure = true, SameSite = SameSiteMode.Lax, Path = "/api/auth", IsEssential = true
+        HttpOnly = true, Secure = configuration.GetValue("Auth:CookieSecure", true),
+        SameSite = SameSiteMode.Lax, Path = "/api/auth", IsEssential = true
     };
 
     private bool IsAllowedOrigin()

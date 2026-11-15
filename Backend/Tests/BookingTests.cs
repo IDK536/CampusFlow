@@ -42,7 +42,7 @@ public sealed class BookingTests : IAsyncLifetime
             throw new InvalidOperationException("Booking tests require campusflow_test.");
         await using var db = CreateDbContext();
         await db.Database.OpenConnectionAsync();
-        await db.Database.MigrateAsync();
+        await TestDatabase.MigrateAsync(db);
         user = await AddUserAsync();
         date = DateOnly.FromDateTime(clock.GetLocalNow().DateTime).AddDays(1);
         room = new Room { Name = "booking_" + suffix, Building = "A", Floor = 1, Capacity = 20, Equipment = ["projector"] };
@@ -504,8 +504,11 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(adminList.GetProperty("responses").TryGetProperty("404", out _));
         Assert.False(adminList.GetProperty("responses").TryGetProperty("401", out _));
         Assert.False(adminCancellation.GetProperty("responses").TryGetProperty("403", out _));
-        Assert.Equal(new[] { "date", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
+        Assert.Equal(new[] { "date", "dateFrom", "dateTo", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
             .EnumerateArray().Select(parameter => parameter.GetProperty("name").GetString()).Order().ToArray());
+        Assert.All(adminList.GetProperty("parameters").EnumerateArray()
+            .Where(parameter => parameter.GetProperty("name").GetString() is "date" or "dateFrom" or "dateTo"),
+            parameter => Assert.Equal("date", parameter.GetProperty("schema").GetProperty("format").GetString()));
         var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("CreateBookingRequest");
         Assert.True(!requestSchema.TryGetProperty("additionalProperties", out var additional) || additional.ValueKind == JsonValueKind.True);
     }
@@ -683,6 +686,16 @@ public sealed class BookingTests : IAsyncLifetime
     [InlineData("date={date}&roomId={room}&userId={owner}&status=active", "2")]
     [InlineData("roomId=2147483647", "")]
     [InlineData("userId=2147483647", "")]
+    [InlineData("dateFrom=2000-01-01&dateTo=2000-01-01", "0")]
+    [InlineData("dateFrom=2000-01-02", "1,2,3")]
+    [InlineData("dateTo=1999-12-31", "")]
+    [InlineData("dateTo=2000-01-01", "0")]
+    [InlineData("dateFrom={date}&dateTo={date}", "1,2,3")]
+    [InlineData("dateFrom={date}&dateTo=9999-12-31", "1,2,3")]
+    [InlineData("dateFrom=0001-01-01&dateTo=9999-12-31", "0,1,2,3")]
+    [InlineData("dateFrom=2000-01-01&dateTo={date}", "0,1,2,3")]
+    [InlineData("dateFrom={date}&dateTo={date}&roomId={room}&userId={owner}&status=active", "2")]
+    [InlineData("date=2000-01-01&dateFrom={date}", "")]
     public async Task AdminListAppliesFiltersAndReturnsCurrentNames(string filter, string expected)
     {
         var other = await AddUserAsync();
@@ -733,6 +746,15 @@ public sealed class BookingTests : IAsyncLifetime
     [InlineData("status=")]
     [InlineData("status=Active")]
     [InlineData("status=unknown")]
+    [InlineData("dateFrom=")]
+    [InlineData("dateTo=")]
+    [InlineData("dateFrom=bad")]
+    [InlineData("dateTo=bad")]
+    [InlineData("dateFrom=2035-02-29")]
+    [InlineData("dateTo=2035-02-29")]
+    [InlineData("dateFrom=2035-1-01")]
+    [InlineData("dateTo=2035-01-01T00:00:00")]
+    [InlineData("dateFrom=2035-01-02&dateTo=2035-01-01")]
     public async Task AdminListRejectsInvalidFilters(string filter)
     {
         await LoginAsAdminAsync();

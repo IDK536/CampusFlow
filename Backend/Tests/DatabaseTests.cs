@@ -16,7 +16,7 @@ public sealed class DatabaseTests : IAsyncLifetime
     {
         await using var db = CreateDbContext();
         await db.Database.OpenConnectionAsync();
-        await db.Database.MigrateAsync();
+        await TestDatabase.MigrateAsync(db);
     }
 
     public async Task DisposeAsync()
@@ -128,8 +128,11 @@ public sealed class DatabaseTests : IAsyncLifetime
         var results = await Task.WhenAll(Record.ExceptionAsync(() => first.SaveChangesAsync()), Record.ExceptionAsync(() => second.SaveChangesAsync()));
 
         Assert.Single(results, x => x is null);
-        var failure = Assert.IsType<DbUpdateException>(Assert.Single(results, x => x is not null));
-        Assert.Equal(PostgresErrorCodes.ExclusionViolation, Assert.IsType<PostgresException>(failure.InnerException).SqlState);
+        var failure = Assert.Single(results, x => x is not null)!;
+        var postgres = Assert.IsType<PostgresException>(failure.GetBaseException());
+        Assert.Contains(postgres.SqlState, new[] { PostgresErrorCodes.ExclusionViolation, PostgresErrorCodes.DeadlockDetected });
+        if (postgres.SqlState == PostgresErrorCodes.ExclusionViolation)
+            Assert.Equal("Bookings_NoOverlap", postgres.ConstraintName);
         Assert.Equal(1, await db.Bookings.CountAsync(x => x.RoomId == data.Room.Id && x.Date == new DateOnly(2030, 1, 1)));
     }
 

@@ -6,6 +6,7 @@ using CampusFlow.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Policy;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -69,12 +70,16 @@ builder.Services.AddAuthorization(options => options.AddPolicy(AdminAccessRequir
     policy => policy.RequireAuthenticatedUser().RequireRole("admin").AddRequirements(new AdminAccessRequirement())));
 builder.Services.AddScoped<IAuthorizationHandler, AdminAuthorizationHandler>();
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, AdminAuthorizationResultHandler>();
-var allowedOrigins = builder.Configuration.GetSection("Auth:AllowedOrigins").Get<string[]>() ?? [];
-builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
+builder.Services.AddCors();
+builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration>((options, configuration) =>
 {
-    if (allowedOrigins.Length > 0)
-        policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod();
-}));
+    var allowedOrigins = configuration.GetSection("Auth:AllowedOrigins").Get<string[]>() ?? [];
+    options.AddDefaultPolicy(policy =>
+    {
+        if (allowedOrigins.Length > 0)
+            policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod();
+    });
+});
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "CampusFlow API", Version = "v1" });
@@ -83,6 +88,7 @@ builder.Services.AddSwaggerGen(options =>
         Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT"
     });
     options.OperationFilter<RoomSearchOperationFilter>();
+    options.OperationFilter<AdminBookingsOperationFilter>();
     options.OperationFilter<AuthorizationOperationFilter>();
     options.SchemaFilter<BookingRequestSchemaFilter>();
 });
