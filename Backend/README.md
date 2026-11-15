@@ -1,5 +1,7 @@
 # CampusFlow Backend
 
+[Сверка эндпоинтов фронта с ТЗ и API](FRONTEND_ENDPOINTS_REVIEW.md).
+
 ASP.NET Core API на .NET 10 и PostgreSQL 18. Исходники API, тесты, решение, шаблон окружения и эта инструкция находятся в Backend. Команды ниже выполняются из этой папки.
 
 ## Настройки
