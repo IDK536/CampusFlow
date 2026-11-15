@@ -3,7 +3,7 @@
 Сервис бронирования аудиторий (кейс хакатона IBS).
 
 - Frontend: [client/README.md](client/README.md) — запуск, пользователи, сценарии демо, API.
-- Docker: `docker compose up --build` → http://localhost:3000
+- Docker: `docker compose up --build` → http://localhost:3008
 
 Документация API доступна в Swagger по адресу `/swagger`.
 Бэкенд, тесты и инструкция запуска: [Backend](Backend/README.md).
@@ -18,7 +18,7 @@
 docker compose run --build --rm init
 ```
 
-Для запуска API и PostgreSQL используйте следующую команду.
+Для запуска фронтенда, API и PostgreSQL используйте следующую команду.
 
 ```sh
 docker compose up --build -d
@@ -26,10 +26,4 @@ docker compose up --build -d
 
 Swagger доступен по адресу <http://localhost:8081/swagger>. Данные PostgreSQL хранятся в томе `postgres_data`. После обновления схемы повторно выполните команду `init`. Она вызывает `--seed`, поэтому при запуске в другой день может добавить новые демонстрационные брони.
 
-Для запуска фронтенда нужен полный каталог `client/` из ветки `frontend`, включая `package-lock.json` и `nginx.conf`. Когда эти файлы появятся в рабочем дереве, выполните:
-
-```sh
-docker compose --profile frontend up --build -d
-```
-
-Фронтенд доступен на <http://localhost:3008> и отправляет запросы `/api` на бэкенд через Nginx. Остановить контейнеры с сохранением данных можно командой `docker compose --profile frontend down`.
+Фронтенд доступен на <http://localhost:3008> и отправляет запросы `/api` на бэкенд через Nginx. Остановить контейнеры с сохранением данных можно командой `docker compose down`.
