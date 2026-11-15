@@ -16,8 +16,8 @@ import { inPeriod } from './period'
 import { computeFreeSlots, findConflict, fitsInFreeSlots, validateBookingTimes } from './bookingRules'
 import { createSeedDb, type MockDb } from './mockData'
 import { createUnsignedJwt, decodeJwt, isTokenExpired } from './jwt'
-import { type KeyValueStorage, localStore, readJSON, writeJSON } from './storage'
-import { loadSession } from './session'
+import { type KeyValueStorage, localStore, readJSON, sessionStore, writeJSON } from './storage'
+import { getAccessToken } from './session'
 import { DATE_RE, todayISO } from '../data/timeGrid'
 import { BUILDINGS, EQUIPMENT_KEYS } from '../data/equipment'
 
@@ -25,10 +25,14 @@ import { BUILDINGS, EQUIPMENT_KEYS } from '../data/equipment'
  * «Бэкенд в браузере»: те же функции, что и HTTP-шлюз, те же коды и тексты ошибок.
  * Данные лежат в localStorage — общие для всех вкладок, поэтому конфликт 409 воспроизводится
  * из двух вкладок с разными пользователями.
+ *
+ * Refresh-cookie эмулируется записью «на стороне сервера» в sessionStorage вкладки: код приложения
+ * её не читает, а только вызывает refresh/logout — как с настоящей HttpOnly-cookie.
  */
 
 const DB_KEY = 'campusflow.mockdb.v1'
-const TOKEN_TTL_SEC = 8 * 60 * 60
+const REFRESH_KEY = 'campusflow.mock.refresh'
+const TOKEN_TTL_SEC = 15 * 60
 
 const fail = (status: number, body: ErrorBody): never => {
   throw new ApiError(status, body)
@@ -46,11 +50,14 @@ export interface MockOptions {
   getToken?: () => string | null
   latencyMs?: number
   today?: () => string
+  /** Где mock хранит refresh-сессию (аналог HttpOnly-cookie). */
+  refreshStorage?: KeyValueStorage
 }
 
 export const createMockGateway = (options: MockOptions = {}) => {
   const storage = options.storage ?? localStore
-  const getToken = options.getToken ?? (() => loadSession()?.token ?? null)
+  const getToken = options.getToken ?? getAccessToken
+  const refreshStorage = options.refreshStorage ?? sessionStore
   const latency = options.latencyMs ?? 220
   const today = options.today ?? todayISO
 
@@ -113,18 +120,20 @@ export const createMockGateway = (options: MockOptions = {}) => {
 
   const validateRoom = (db: MockDb, input: RoomInput, ignoreId?: number): RoomInput => {
     const name = (input.name ?? '').trim()
-    const errors: Record<string, string> = {}
-    if (!name) errors.name = 'Укажите название'
+    // Как в API: details — {поле: string[]}.
+    const errors: Record<string, string[]> = {}
+    const add = (field: string, message: string) => (errors[field] ??= []).push(message)
+    if (!name) add('name', 'Укажите название')
     else if (db.rooms.some((r) => r.id !== ignoreId && r.name.toLowerCase() === name.toLowerCase())) {
-      errors.name = 'Аудитория с таким названием уже есть'
+      add('name', 'Аудитория с таким названием уже существует')
     }
-    if (!BUILDINGS.includes(input.building)) errors.building = `Корпус — от ${BUILDINGS[0]} до ${BUILDINGS[BUILDINGS.length - 1]}`
-    if (!Number.isInteger(input.floor) || input.floor < 1) errors.floor = 'Этаж — целое число от 1'
-    if (!Number.isInteger(input.capacity) || input.capacity <= 0) errors.capacity = 'Вместимость — целое число больше 0'
+    if (!BUILDINGS.includes(input.building)) add('building', `Корпус — один из ${BUILDINGS.join(', ')}`)
+    if (!Number.isInteger(input.floor) || input.floor < 1) add('floor', 'Этаж — целое число от 1')
+    if (!Number.isInteger(input.capacity) || input.capacity <= 0) add('capacity', 'Вместимость — целое число больше 0')
     if (!Array.isArray(input.equipment) || input.equipment.some((e) => !EQUIPMENT_KEYS.includes(e))) {
-      errors.equipment = 'Неизвестное оборудование'
+      add('equipment', 'Неизвестное оборудование')
     }
-    if (Object.keys(errors).length) validation(Object.values(errors)[0], errors)
+    if (Object.keys(errors).length) validation('Некорректные данные запроса', errors)
     return {
       name,
       building: input.building,
@@ -146,6 +155,12 @@ export const createMockGateway = (options: MockOptions = {}) => {
     return { id, status: 'cancelled' as const }
   }
 
+  const issue = (user: User) => {
+    const now = Math.floor(Date.now() / 1000)
+    const token = createUnsignedJwt({ sub: user.id, login: user.login, role: user.role, iat: now, exp: now + TOKEN_TTL_SEC })
+    return { token, user }
+  }
+
   const gateway: Gateway & { resetDemoData(): void } = {
     login: (login, password) =>
       respond(() => {
@@ -154,9 +169,25 @@ export const createMockGateway = (options: MockOptions = {}) => {
         if (!user || password !== user.login) {
           fail(401, { code: 'UNAUTHORIZED', message: 'Неверный логин или пароль' })
         }
-        const now = Math.floor(Date.now() / 1000)
-        const token = createUnsignedJwt({ sub: user!.id, login: user!.login, role: user!.role, iat: now, exp: now + TOKEN_TTL_SEC })
-        return { token, user: user! }
+        writeJSON(refreshStorage, REFRESH_KEY, { userId: user!.id })
+        return issue(user!)
+      }),
+
+    refresh: () =>
+      respond(() => {
+        const db = load()
+        const record = readJSON<{ userId: number }>(refreshStorage, REFRESH_KEY)
+        const user = record && db.users.find((u) => u.id === record.userId)
+        if (!user) {
+          refreshStorage.removeItem(REFRESH_KEY)
+          return fail(401, { code: 'UNAUTHORIZED', message: 'Сессия истекла, войдите снова' })
+        }
+        return issue(user)
+      }),
+
+    logout: () =>
+      respond(() => {
+        refreshStorage.removeItem(REFRESH_KEY)
       }),
 
     getRooms: (filters) => respond(() => filterRooms(load().rooms, filters)),
@@ -214,7 +245,7 @@ export const createMockGateway = (options: MockOptions = {}) => {
           startTime: input.startTime,
           endTime: input.endTime,
           status: 'active',
-          comment,
+          comment: comment || null,
         }
         db.bookings.push(booking)
         save(db)
@@ -269,18 +300,18 @@ export const createMockGateway = (options: MockOptions = {}) => {
         return room
       }),
 
-    // DELETE /admin/rooms/{id} — маршрут и поведение при связанных бронях ещё согласуются (FRONTEND_DECISIONS, п. 1).
+    // DELETE /admin/rooms/{id}: как в API, любая связанная бронь — активная или отменённая,
+    // прошедшая или будущая — запрещает удаление (409 ROOM_HAS_BOOKINGS). Отмена броней не помогает.
     adminDeleteRoom: (id) =>
       respond(() => {
         const db = load()
         requireAdmin(db)
         if (!db.rooms.some((r) => r.id === id)) roomNotFound(id)
-        const active = db.bookings.filter((b) => b.roomId === id && b.status === 'active' && b.date >= today())
-        if (active.length) {
+        if (db.bookings.some((b) => b.roomId === id)) {
           fail(409, {
             code: 'ROOM_HAS_BOOKINGS',
-            message: `В аудитории есть активные брони (${active.length}). Сначала отмените их`,
-            details: { roomId: id, activeBookings: active.length },
+            message: 'Аудиторию нельзя удалить: с ней связаны брони',
+            details: { roomId: id },
           })
         }
         db.rooms = db.rooms.filter((r) => r.id !== id)

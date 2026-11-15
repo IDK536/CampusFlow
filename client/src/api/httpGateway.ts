@@ -9,20 +9,17 @@ import type {
   Room,
   RoomFilters,
   RoomInput,
-  RoomSearchQuery,
-  RoomWithSlots,
+  RoomSearchResponse,
 } from './types'
-import { http, isApiError } from './api'
-import { fitsInFreeSlots } from './bookingRules'
+import { http } from './api'
 import { inPeriod } from './period'
 
 /**
- * Пути — из раздаточного материала (раздел 3).
- * Два маршрута ещё не согласованы с backend и вынесены в константы:
- *  - SEARCH_PATH — поиск свободных аудиторий одним запросом (FRONTEND_DECISIONS, п. 3);
- *  - удаление аудитории DELETE /admin/rooms/{id} (FRONTEND_DECISIONS, п. 1).
+ * Пути — по Swagger бэкенда (baseURL = /api).
+ * Поиск одним запросом — это GET /rooms с параметром date (и, при желании, парой startTime/endTime):
+ * с date ответ — {date, rooms}, без date — массив Room. Отдельного /rooms/search нет.
  */
-export const SEARCH_PATH = '/rooms/search'
+export const SEARCH_PATH = '/rooms'
 const roomPath = (id: number) => `/admin/rooms/${id}`
 
 const roomParams = (filters: RoomFilters = {}) => ({
@@ -34,26 +31,20 @@ const roomParams = (filters: RoomFilters = {}) => ({
 const clean = <T extends object>(params: T) =>
   Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== '' && v !== null))
 
-const getRooms = async (filters?: RoomFilters) => (await http.get<Room[]>('/rooms', { params: roomParams(filters) })).data
+const getRooms = async (filters?: RoomFilters) =>
+  (await http.get<Room[]>('/rooms', { params: clean(roomParams(filters)) })).data
 
 const getFreeSlots = async (roomId: number, date: string) =>
   (await http.get<FreeSlots>(`/rooms/${roomId}/free-slots`, { params: { date } })).data
 
-/**
- * Запасной путь, пока на backend нет объединённого поиска: список аудиторий + free-slots по каждой.
- * Срабатывает только если SEARCH_PATH отвечает 404/405 без кода ROOM_NOT_FOUND.
- */
-const searchFallback = async (query: RoomSearchQuery): Promise<RoomWithSlots[]> => {
-  const rooms = await getRooms(query)
-  const withSlots = await Promise.all(
-    rooms.map(async (room) => ({ ...room, freeSlots: (await getFreeSlots(room.id, query.date)).freeSlots })),
-  )
-  const { startTime, endTime } = query
-  return startTime && endTime ? withSlots.filter((r) => fitsInFreeSlots(r.freeSlots, { startTime, endTime })) : withSlots
-}
-
 export const httpGateway: Gateway = {
   login: async (login, password) => (await http.post<LoginResponse>('/auth/login', { login, password })).data,
+
+  refresh: async () => (await http.post<LoginResponse>('/auth/refresh')).data,
+
+  logout: async () => {
+    await http.post('/auth/logout')
+  },
 
   getRooms,
 
@@ -62,15 +53,10 @@ export const httpGateway: Gateway = {
   getFreeSlots,
 
   searchRooms: async (query) => {
-    try {
-      const params = clean({ ...roomParams(query), date: query.date, startTime: query.startTime, endTime: query.endTime })
-      return (await http.get<RoomWithSlots[]>(SEARCH_PATH, { params })).data
-    } catch (e) {
-      if (isApiError(e) && (e.status === 404 || e.status === 405) && e.code !== 'ROOM_NOT_FOUND') {
-        return searchFallback(query)
-      }
-      throw e
-    }
+    // Время передаётся только парой и только вместе с датой.
+    const interval = query.startTime && query.endTime ? { startTime: query.startTime, endTime: query.endTime } : {}
+    const params = clean({ ...roomParams(query), date: query.date, ...interval })
+    return (await http.get<RoomSearchResponse>(SEARCH_PATH, { params })).data.rooms
   },
 
   createBooking: async (input: BookingInput) => (await http.post<Booking>('/bookings', input)).data,
@@ -80,11 +66,11 @@ export const httpGateway: Gateway = {
 
   cancelBooking: async (id) => (await http.delete<CancelResponse>(`/bookings/${id}`)).data,
 
-  // Контракт API знает только `date` (один день). Период отдаём как date, если он из одного дня,
-  // а dateFrom/dateTo — на вырост; в любом случае дорезаем по периоду на клиенте.
+  // API фильтрует только по date, roomId, userId, status. Один день уходит как date;
+  // период в несколько дней сервер не поддерживает — его отсекаем на клиенте.
   adminGetBookings: async ({ dateFrom, dateTo, ...rest }: AdminBookingFilters = {}) => {
     const single = dateFrom && dateFrom === dateTo ? dateFrom : undefined
-    const params = clean({ ...rest, date: single, dateFrom: single ? undefined : dateFrom, dateTo: single ? undefined : dateTo })
+    const params = clean({ ...rest, date: single })
     const items = (await http.get<Booking[]>('/admin/bookings', { params })).data
     return items.filter((b) => inPeriod(b.date, { dateFrom, dateTo }))
   },

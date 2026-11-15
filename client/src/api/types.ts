@@ -1,7 +1,6 @@
 export type Role = 'student' | 'admin'
-export type Building =
-  | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J'
-  | 'K' | 'L' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'S' | 'T'
+/** ТЗ (DOCX) разрешает только корпуса A–D; API отклоняет остальные с 400. */
+export type Building = 'A' | 'B' | 'C' | 'D'
 export type Equipment = 'projector' | 'whiteboard' | 'computers' | 'audio' | 'video'
 export type BookingStatus = 'active' | 'cancelled'
 
@@ -49,7 +48,8 @@ export interface Booking {
   startTime: string
   endTime: string
   status: BookingStatus
-  comment: string
+  /** API может вернуть null, если комментарий не задан. */
+  comment: string | null
 }
 
 export interface BookingInput {
@@ -57,7 +57,8 @@ export interface BookingInput {
   date: string
   startTime: string
   endTime: string
-  comment: string
+  /** Необязателен в запросе. */
+  comment?: string
 }
 
 export interface LoginResponse {
@@ -76,15 +77,24 @@ export interface RoomFilters {
   equipment?: Equipment[]
 }
 
-/** Параметры поиска свободных аудиторий одним запросом (FRONTEND_DECISIONS, п. 3). */
+/** Параметры поиска свободных аудиторий одним запросом: GET /api/rooms с датой (и, при желании, интервалом). */
 export interface RoomSearchQuery extends RoomFilters {
   date: string
   startTime?: string
   endTime?: string
 }
 
+/** Ответ GET /api/rooms при заданной date: оболочка с датой и аудиториями со свободными слотами. */
+export interface RoomSearchResponse {
+  date: string
+  rooms: RoomWithSlots[]
+}
+
 export interface AdminBookingFilters {
-  /** Период включительно, ГГГГ-ММ-ДД. Пустая граница — без ограничения; один день — from === to. */
+  /**
+   * Период включительно, ГГГГ-ММ-ДД. Пустая граница — без ограничения; один день — from === to.
+   * API знает только `date`: один день уходит как date, период фильтруется на клиенте.
+   */
   dateFrom?: string
   dateTo?: string
   roomId?: number | ''
@@ -112,6 +122,10 @@ export interface ErrorBody {
 
 export interface Gateway {
   login(login: string, password: string): Promise<LoginResponse>
+  /** POST /api/auth/refresh — по HttpOnly refresh-cookie, действительный access не нужен. */
+  refresh(): Promise<LoginResponse>
+  /** POST /api/auth/logout — отзывает refresh-сессию и удаляет cookie, 204. */
+  logout(): Promise<void>
   getRooms(filters?: RoomFilters): Promise<Room[]>
   getRoom(id: number): Promise<Room>
   getFreeSlots(roomId: number, date: string): Promise<FreeSlots>

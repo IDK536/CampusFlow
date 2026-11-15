@@ -25,7 +25,7 @@ export interface LoadReport {
 
 const DAY_MINUTES = DAY_END - DAY_START
 export const TOP_ROOMS = 10
-// Проценты не округляем: при 2000 аудиториях загрузка корпуса бывает 0,4%, и округление до целого
+// Проценты не округляем: при сотнях аудиторий загрузка корпуса бывает 0,4%, и округление до целого
 // превращает реальные брони в «0%». Округление — только при выводе, через formatPercent.
 const pct = (part: number, whole: number) => (whole ? (part / whole) * 100 : 0)
 

@@ -11,7 +11,10 @@ export const errorMessage = (error: unknown): string => {
   return 'Что-то пошло не так'
 }
 
-/** Единая точка показа ошибок API: 401 завершает сессию, остальное — тост с текстом от backend. */
+/**
+ * Единая точка показа ошибок API: 401 (уже после неудачного refresh и повтора в gateway.ts)
+ * завершает сессию, остальное — тост с текстом от backend.
+ */
 export function* reportError(error: unknown, title: string): SagaIterator {
   if (isApiError(error) && error.status === 401) {
     const hasUser: boolean = yield select((s: RootState) => Boolean(s.auth.user))

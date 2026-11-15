@@ -57,6 +57,28 @@ function* cancelBooking(action: PayloadAction<number>): SagaIterator {
   }
 }
 
+/** Поля формы аудитории, у которых есть место для сообщения об ошибке. */
+const FORM_FIELDS = new Set(['name', 'building', 'floor', 'capacity', 'equipment'])
+
+/**
+ * details из 400 → ошибки полей. API присылает {поле: string[]}; строку тоже принимаем.
+ * Ключ может быть JSON-путём ($.floor, $.equipment[0]) или с заглавной буквы (Floor) — приводим к имени поля.
+ * Всё, что не относится к известному полю, уходит в общий список и показывается под формой.
+ */
+export const fieldErrors = (details: Record<string, unknown> | null) => {
+  const fields: Record<string, string> = {}
+  const general: string[] = []
+  for (const [key, value] of Object.entries(details ?? {})) {
+    const messages = (Array.isArray(value) ? value : [value]).filter((m): m is string => typeof m === 'string' && m !== '')
+    if (!messages.length) continue
+    const field = key.replace(/^\$\.?/, '').split(/[.[]/)[0]
+    const name = field.charAt(0).toLowerCase() + field.slice(1)
+    if (FORM_FIELDS.has(name)) fields[name] = [fields[name], ...messages].filter(Boolean).join('. ')
+    else general.push(...messages)
+  }
+  return { fields, general }
+}
+
 function* saveRoom(action: PayloadAction<{ id: number | null; input: RoomInput }>): SagaIterator {
   const { id, input } = action.payload
   try {
@@ -66,11 +88,9 @@ function* saveRoom(action: PayloadAction<{ id: number | null; input: RoomInput }
     yield put(catalogRequested())
     yield put(searchRequested())
   } catch (error) {
-    const fields =
-      isApiError(error) && error.status === 400 && error.details
-        ? Object.fromEntries(Object.entries(error.details).filter(([, v]) => typeof v === 'string')) as Record<string, string>
-        : {}
-    yield put(roomSaveFailed({ message: errorMessage(error), fields }))
+    const { fields, general } =
+      isApiError(error) && error.status === 400 ? fieldErrors(error.details) : { fields: {}, general: [] }
+    yield put(roomSaveFailed({ message: errorMessage(error), fields, general }))
     if (!isApiError(error) || error.status !== 400) yield call(reportError, error, 'Не удалось сохранить аудиторию')
   }
 }

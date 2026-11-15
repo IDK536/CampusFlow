@@ -7,6 +7,8 @@ import { todayISO } from '../../data/timeGrid'
 export interface FormError {
   message: string
   fields: Record<string, string>
+  /** Ошибки из details, которые не относятся к конкретному полю формы. */
+  general: string[]
 }
 
 interface AdminState {

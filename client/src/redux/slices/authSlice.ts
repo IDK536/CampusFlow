@@ -1,6 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import type { User } from '../../api/types'
-import { loadSession, type Session } from '../../api/session'
+import type { Session } from '../../api/session'
 
 type Status = 'idle' | 'loading' | 'failed'
 
@@ -11,13 +11,14 @@ interface AuthState {
   error: string | null
   /** Логин, под которым идёт вход прямо сейчас — для индикатора на кнопке быстрого входа. */
   pendingLogin: string | null
+  /** Идёт восстановление входа через refresh-cookie при старте: защищённые экраны ждут. */
+  restoring: boolean
 }
 
-const restored = loadSession()
-
 const initialState: AuthState = {
-  user: restored?.user ?? null,
-  token: restored?.token ?? null,
+  user: null,
+  token: null,
+  restoring: true,
   status: 'idle',
   error: null,
   pendingLogin: null,
@@ -37,6 +38,15 @@ const authSlice = createSlice({
       state.token = action.payload.token
       state.status = 'idle'
       state.pendingLogin = null
+      state.restoring = false
+    },
+    /** Access обновлён через refresh: новый токен и актуальный пользователь. */
+    sessionRefreshed(state, action: PayloadAction<Session>) {
+      state.user = action.payload.user
+      state.token = action.payload.token
+    },
+    restoreFinished(state) {
+      state.restoring = false
     },
     loginFailed(state, action: PayloadAction<string>) {
       state.status = 'failed'
@@ -54,6 +64,14 @@ const authSlice = createSlice({
   },
 })
 
-export const { loginRequested, loginSucceeded, loginFailed, logoutRequested, loggedOut, sessionExpired } =
-  authSlice.actions
+export const {
+  loginRequested,
+  loginSucceeded,
+  loginFailed,
+  logoutRequested,
+  loggedOut,
+  sessionExpired,
+  sessionRefreshed,
+  restoreFinished,
+} = authSlice.actions
 export default authSlice.reducer

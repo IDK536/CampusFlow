@@ -20,4 +20,5 @@ export const equipmentLabel = (key: Equipment): string => EQUIPMENT.find((e) => 
 
 import type { Building } from '../api/types'
 
-export const BUILDINGS: readonly Building[] = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T']
+/** Корпуса — только A/B/C/D: так требует ТЗ (DOCX), остальные API отклоняет с 400. */
+export const BUILDINGS: readonly Building[] = ['A', 'B', 'C', 'D']

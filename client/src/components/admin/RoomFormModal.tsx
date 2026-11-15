@@ -89,7 +89,7 @@ const RoomForm = ({ room, existingNames }: { room: Room | null; existingNames: s
   const [touched, setTouched] = useState(false)
 
   const localErrors = validate(form, existingNames, room?.name)
-  const errors = { ...(touched ? localErrors : {}), ...(error?.fields ?? {}) }
+  const errors: Record<string, string | undefined> = { ...(touched ? localErrors : {}), ...(error?.fields ?? {}) }
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }))
 
   const submit = (e: FormEvent) => {
@@ -119,9 +119,10 @@ const RoomForm = ({ room, existingNames }: { room: Room | null; existingNames: s
         {errors.name && <span className="field__error">{errors.name}</span>}
       </label>
 
-      <div className="field">
+      <div className={`field${errors.building ? ' has-error' : ''}`}>
         <span className="field__label">Корпус</span>
         <BuildingSelect<Building> value={form.building} onChange={(building) => set({ building })} />
+        {errors.building && <span className="field__error">{errors.building}</span>}
       </div>
 
       <div className="room-form__row">
@@ -150,7 +151,7 @@ const RoomForm = ({ room, existingNames }: { room: Room | null; existingNames: s
         </label>
       </div>
 
-      <div className="field">
+      <div className={`field${errors.equipment ? ' has-error' : ''}`}>
         <span className="field__label">Оборудование</span>
         <div className="chip-row">
           {EQUIPMENT.map((e) => {
@@ -171,12 +172,13 @@ const RoomForm = ({ room, existingNames }: { room: Room | null; existingNames: s
             )
           })}
         </div>
+        {errors.equipment && <span className="field__error">{errors.equipment}</span>}
       </div>
 
-      {error && !Object.keys(error.fields).length && (
+      {error && (error.general.length > 0 || !Object.keys(error.fields).length) && (
         <p className="form-error" role="alert">
           <Icon name="alert" size={16} />
-          {error.message}
+          {error.general.length ? error.general.join('. ') : error.message}
         </p>
       )}
     </form>

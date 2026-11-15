@@ -30,6 +30,7 @@ export const AdminRoomsPage = () => {
   }, [dispatch])
 
   // Сколько впереди активных броней в каждой аудитории — подсказка перед удалением.
+  // Удаление запрещает любая связанная бронь, но отменённые и прошедшие здесь не загружаются.
   const activeByRoom = useMemo(() => {
     const today = todayISO()
     const map = new Map<number, number>()
@@ -120,20 +121,24 @@ export const AdminRoomsPage = () => {
       >
         {deleteBlocked > 0 ? (
           <p>
-            В этой аудитории ещё {plural(deleteBlocked, ['активная бронь', 'активные брони', 'активных броней'])}. Сервер не даст удалить
-            её, пока брони не отменены.{' '}
+            В этой аудитории {plural(deleteBlocked, ['активная бронь', 'активные брони', 'активных броней'])}. Сервер не даст
+            удалить аудиторию, с которой связана хотя бы одна бронь, — даже отменённая или прошедшая, поэтому отмена броней
+            не поможет.{' '}
             <Link
               to="/admin/bookings"
               onClick={() => {
-                dispatch(adminFiltersChanged({ roomId: toDelete!.id, status: 'active', dateFrom: '', dateTo: '', userId: '' }))
+                dispatch(adminFiltersChanged({ roomId: toDelete!.id, status: '', dateFrom: '', dateTo: '', userId: '' }))
                 setToDelete(null)
               }}
             >
-              Перейти к броням
+              Посмотреть брони
             </Link>
           </p>
         ) : (
-          <p>Аудитория исчезнет из поиска и со схемы кампуса. Действие нельзя отменить.</p>
+          <p>
+            Аудитория исчезнет из поиска и со схемы кампуса. Действие нельзя отменить. Если с ней связаны брони (в том числе
+            отменённые или прошедшие), сервер откажет в удалении.
+          </p>
         )}
       </ConfirmDialog>
     </div>
