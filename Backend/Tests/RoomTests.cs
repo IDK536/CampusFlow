@@ -1,0 +1,1049 @@
+using System.Data.Common;
+using System.IdentityModel.Tokens.Jwt;
+using System.Globalization;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using CampusFlow.Api.Contracts;
+using CampusFlow.Api.Data;
+using CampusFlow.Api.Models;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.IdentityModel.Tokens;
+using Xunit;
+
+namespace CampusFlow.Api.Tests;
+
+public sealed class RoomTests : IAsyncLifetime
+{
+    private readonly string suffix = Guid.NewGuid().ToString("N");
+    private readonly DateOnly date = DateOnly.FromDateTime(DateTime.Now).AddDays(1);
+    private readonly QueryCounter counter = new();
+    private readonly TestClock clock = new();
+    private readonly string signingKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
+    private string connection = null!;
+    private WebApplicationFactory<Program> factory = null!;
+    private HttpClient client = null!;
+    private User user = null!;
+    private Room[] rooms = [];
+    private string DateText => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    public async Task InitializeAsync()
+    {
+        DotNetEnv.Env.NoClobber().TraversePath().Load();
+        connection = Environment.GetEnvironmentVariable("CAMPUSFLOW_TEST_CONNECTION")
+            ?? throw new InvalidOperationException("CAMPUSFLOW_TEST_CONNECTION is required.");
+        if (new Npgsql.NpgsqlConnectionStringBuilder(connection).Database != "campusflow_test")
+            throw new InvalidOperationException("Room tests require campusflow_test.");
+        await using var db = CreateDbContext();
+        await db.Database.OpenConnectionAsync();
+        await TestDatabase.MigrateAsync(db);
+        user = new User { Login = "rooms_" + suffix, DisplayName = "Room Test", Role = "student" };
+        user.PasswordHash = new PasswordHasher<User>().HashPassword(user, "password");
+        rooms =
+        [
+            new() { Name = suffix + "_booked", Building = "A", Floor = 1, Capacity = 30, Equipment = ["projector", "whiteboard"] },
+            new() { Name = suffix + "_projector", Building = "A", Floor = 2, Capacity = 40, Equipment = ["projector"] },
+            new() { Name = suffix + "_full", Building = "B", Floor = 1, Capacity = 20, Equipment = ["whiteboard", "computers"] },
+            new() { Name = suffix + "_free", Building = "A", Floor = 3, Capacity = 50, Equipment = ["projector", "whiteboard"] }
+        ];
+        db.Users.Add(user);
+        db.Rooms.AddRange(rooms);
+        await db.SaveChangesAsync();
+        db.Bookings.AddRange(
+            new Booking { RoomId = rooms[0].Id, UserId = user.Id, Date = date, StartTime = new(9, 0), EndTime = new(10, 30) },
+            new Booking { RoomId = rooms[0].Id, UserId = user.Id, Date = date, StartTime = new(12, 0), EndTime = new(14, 0) },
+            new Booking { RoomId = rooms[0].Id, UserId = user.Id, Date = date, StartTime = new(14, 0), EndTime = new(16, 0), Status = "cancelled" },
+            new Booking { RoomId = rooms[0].Id, UserId = user.Id, Date = date.AddDays(1), StartTime = new(15, 0), EndTime = new(16, 0) },
+            new Booking { RoomId = rooms[2].Id, UserId = user.Id, Date = date, StartTime = new(9, 0), EndTime = new(18, 0) });
+        await db.SaveChangesAsync();
+        factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:CampusFlow"] = connection,
+                ["Auth:AllowedOrigins:0"] = "http://localhost:5173",
+                ["Jwt:Key"] = signingKey, ["Jwt:Issuer"] = "CampusFlow", ["Jwt:Audience"] = "CampusFlowClient"
+            }));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(clock);
+                services.AddDbContext<CampusFlowDbContext>((_, options) => options.AddInterceptors(counter));
+            });
+        });
+        client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = false });
+        using var login = await client.PostAsJsonAsync("/api/auth/login", new { login = user.Login, password = "password" });
+        login.EnsureSuccessStatusCode();
+        var auth = await login.Content.ReadFromJsonAsync<AuthResponse>();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", auth!.Token);
+        counter.Reads = 0;
+    }
+
+    public async Task DisposeAsync()
+    {
+        client?.Dispose();
+        if (factory is not null)
+            await factory.DisposeAsync();
+        if (connection is null)
+            return;
+        await using var db = CreateDbContext();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var userIds = db.Users.Where(item => item.Login == "rooms_" + suffix || item.Login.StartsWith("rooms_" + suffix + "_")).Select(item => item.Id);
+        await db.RefreshTokens.Where(token => userIds.Contains(token.UserId)).ExecuteDeleteAsync();
+        await db.Bookings.Where(booking => userIds.Contains(booking.UserId)).ExecuteDeleteAsync();
+        var roomIds = rooms.Select(room => room.Id).ToArray();
+        await db.Rooms.Where(room => roomIds.Contains(room.Id) || room.Name.StartsWith(suffix + "_")).ExecuteDeleteAsync();
+        await db.Users.Where(item => item.Login == "rooms_" + suffix || item.Login.StartsWith("rooms_" + suffix + "_")).ExecuteDeleteAsync();
+        await transaction.CommitAsync();
+    }
+
+    [Theory]
+    [InlineData("student")]
+    [InlineData("admin")]
+    public async Task BothRolesCanReadRoomListCardAndFreeSlots(string role)
+    {
+        await using var db = CreateDbContext();
+        await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, role));
+        using var login = await client.PostAsJsonAsync("/api/auth/login", new { login = user.Login, password = "password" });
+        var auth = await login.Content.ReadFromJsonAsync<AuthResponse>();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", auth!.Token);
+
+        var list = await client.GetFromJsonAsync<RoomResponse[]>("/api/rooms");
+        var card = await client.GetFromJsonAsync<RoomResponse>($"/api/rooms/{rooms[0].Id}");
+        using var slots = await client.GetAsync($"/api/rooms/{rooms[0].Id}/free-slots?date={DateText}");
+
+        Assert.All(rooms, room => Assert.Contains(list!, item => item.Id == room.Id));
+        Assert.Equal(list!.Select(item => item.Id).Order(), list!.Select(item => item.Id));
+        Assert.Equal(rooms[0].Name, card!.Name);
+        Assert.Equal(rooms[0].Equipment, card.Equipment);
+        Assert.Equal(HttpStatusCode.OK, slots.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("list", 1)]
+    [InlineData("availability", 2)]
+    [InlineData("card", 1)]
+    public async Task AdminRoomCountersIncludeTodayAndHistoryRegardlessOfSearchDate(string view, int expectedReads)
+    {
+        var today = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var emptyRoom = new Room { Name = suffix + "_counts_empty", Building = "A", Floor = 1, Capacity = 10, Equipment = [] };
+        await using var db = CreateDbContext();
+        db.Rooms.Add(emptyRoom);
+        db.Bookings.AddRange(
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today, StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(1), StartTime = new(17, 0), EndTime = new(18, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(14), StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(-1), StartTime = new(11, 0), EndTime = new(12, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today, StartTime = new(10, 0), EndTime = new(11, 0), Status = "cancelled" },
+            new Booking { RoomId = rooms[3].Id, UserId = user.Id, Date = today.AddDays(-1), StartTime = new(9, 0), EndTime = new(10, 0), Status = "cancelled" });
+        await db.SaveChangesAsync();
+        await LoginAsAdminAsync();
+        clock.SetLocal(today.ToDateTime(new TimeOnly(18, 30)));
+        var path = view switch
+        {
+            "card" => $"/api/rooms/{rooms[1].Id}",
+            "availability" => $"/api/rooms?date={today.AddDays(4):yyyy-MM-dd}&building=A",
+            _ => "/api/rooms?building=A"
+        };
+        counter.Reads = 0;
+
+        using var response = await client.GetAsync(path);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var returned = view == "card" ? new[] { body.RootElement }
+            : (view == "availability" ? body.RootElement.GetProperty("rooms") : body.RootElement).EnumerateArray().ToArray();
+        var reads = counter.Reads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var room = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == rooms[1].Id);
+        Assert.Equal(3, room.GetProperty("activeBookings").GetInt32());
+        Assert.True(room.GetProperty("hasBookings").GetBoolean());
+        if (view != "card")
+        {
+            var historyOnly = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == rooms[3].Id);
+            var empty = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == emptyRoom.Id);
+            Assert.Equal(0, historyOnly.GetProperty("activeBookings").GetInt32());
+            Assert.True(historyOnly.GetProperty("hasBookings").GetBoolean());
+            Assert.Equal(0, empty.GetProperty("activeBookings").GetInt32());
+            Assert.False(empty.GetProperty("hasBookings").GetBoolean());
+        }
+        Assert.Equal(expectedReads, reads);
+    }
+
+    [Theory]
+    [InlineData("student", false)]
+    [InlineData("confirmed", true)]
+    [InlineData("role_changed", false)]
+    [InlineData("promoted", false)]
+    [InlineData("deleted", false)]
+    public async Task RoomCountersRequireBothAdminJwtAndCurrentDatabaseRole(string state, bool includeCounters)
+    {
+        if (state is "confirmed" or "role_changed" or "deleted")
+            await LoginAsAdminAsync();
+        await using var db = CreateDbContext();
+        if (state == "role_changed")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "student"));
+        if (state == "promoted")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        if (state == "deleted")
+        {
+            await db.RefreshTokens.Where(item => item.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Bookings.Where(item => item.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Users.Where(item => item.Id == user.Id).ExecuteDeleteAsync();
+        }
+        var paths = new[] { "/api/rooms", $"/api/rooms?date={DateText}", $"/api/rooms/{rooms[1].Id}" };
+        var results = new List<(HttpStatusCode Status, bool Active, bool Has, string[] Fields)>();
+
+        foreach (var path in paths)
+        {
+            using var response = await client.GetAsync(path);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var room = path.Contains("?date=") ? body.RootElement.GetProperty("rooms").EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == rooms[1].Id)
+                : body.RootElement.ValueKind == JsonValueKind.Array ? body.RootElement.EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == rooms[1].Id)
+                : body.RootElement;
+            results.Add((response.StatusCode, room.TryGetProperty("activeBookings", out _), room.TryGetProperty("hasBookings", out _),
+                room.EnumerateObject().Select(item => item.Name).Order().ToArray()));
+        }
+
+        Assert.All(results, result =>
+        {
+            Assert.Equal(HttpStatusCode.OK, result.Status);
+            Assert.Equal(includeCounters, result.Active);
+            Assert.Equal(includeCounters, result.Has);
+        });
+        if (!includeCounters)
+        {
+            Assert.Equal(new[] { "building", "capacity", "equipment", "floor", "id", "name" }, results[0].Fields);
+            Assert.Equal(new[] { "building", "capacity", "equipment", "floor", "freeSlots", "id", "name" }, results[1].Fields);
+            Assert.Equal(results[0].Fields, results[2].Fields);
+        }
+    }
+
+    [Theory]
+    [InlineData("?floor=2", 1)]
+    [InlineData("?floor=1&building=A&minCapacity=30&equipment=projector", 0)]
+    [InlineData("?building=A", 0, 1, 3)]
+    [InlineData("?minCapacity=40", 1, 3)]
+    [InlineData("?equipment=whiteboard", 0, 2, 3)]
+    [InlineData("?building=A&minCapacity=30&equipment=projector,whiteboard", 0, 3)]
+    [InlineData("?equipment=projector,%20whiteboard,projector", 0, 3)]
+    public async Task FiltersReturnOnlyMatchingRooms(string query, params int[] expectedIndexes)
+    {
+        var ownIds = rooms.Select(room => room.Id).ToArray();
+        var expected = expectedIndexes.Select(index => rooms[index].Id).Order().ToArray();
+
+        var result = await client.GetFromJsonAsync<RoomResponse[]>("/api/rooms" + query);
+
+        Assert.Equal(expected, result!.Where(room => ownIds.Contains(room.Id)).Select(room => room.Id).Order());
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("case", false)]
+    [InlineData("spaces", false)]
+    [InlineData("partial", false)]
+    [InlineData("wildcard", false)]
+    [InlineData("empty", false)]
+    [InlineData("blank", false)]
+    [InlineData("exact", true)]
+    [InlineData("conflict", true)]
+    public async Task RoomQMatchesFullLiteralNameAndCombinesFilters(string mode, bool withDate)
+    {
+        var name = "Аудитория_%\\" + suffix;
+        await using var db = CreateDbContext();
+        await db.Rooms.Where(item => item.Id == rooms[0].Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Name, name));
+        var q = mode switch
+        {
+            "case" => name.ToUpperInvariant(),
+            "spaces" => "  " + name + "  ",
+            "partial" => name[..^1],
+            "wildcard" => "%",
+            "empty" => "",
+            "blank" => "   ",
+            _ => name
+        };
+        var path = "/api/rooms?q=" + Uri.EscapeDataString(q);
+        if (withDate)
+            path += $"&date={DateText}&building=A&floor=1&minCapacity=30&equipment=projector,whiteboard&startTime=10:30&endTime=12:00&minDuration=60";
+        if (mode == "conflict")
+            path = path.Replace("building=A", "building=B");
+        var expected = mode is "partial" or "wildcard" or "conflict" ? []
+            : mode is "empty" or "blank" ? rooms.Select(item => item.Id).Order().ToArray() : new[] { rooms[0].Id };
+        var ownIds = rooms.Select(item => item.Id).ToArray();
+        counter.Reads = 0;
+
+        using var response = await client.GetAsync(path);
+        var result = withDate
+            ? (await response.Content.ReadFromJsonAsync<AvailableRoomsResponse>())!.Rooms.Select(item => item.Id).ToArray()
+            : (await response.Content.ReadFromJsonAsync<RoomResponse[]>())!.Select(item => item.Id).ToArray();
+        var reads = counter.Reads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expected, result.Where(ownIds.Contains).Order());
+        Assert.Equal(withDate ? 2 : 1, reads);
+    }
+
+    [Fact]
+    public async Task AvailabilityUsesTwoQueriesAndMaximalIntervals()
+    {
+        var path = "/api/rooms?date=" + DateText;
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+        var queryCount = counter.Reads;
+
+        Assert.Equal(DateText, result!.Date);
+        Assert.Equal(2, queryCount);
+        Assert.Equal([new FreeSlotResponse("10:30", "12:00"), new FreeSlotResponse("14:00", "18:00")],
+            result.Rooms.Single(room => room.Id == rooms[0].Id).FreeSlots);
+        Assert.Equal([new FreeSlotResponse("09:00", "18:00")], result.Rooms.Single(room => room.Id == rooms[1].Id).FreeSlots);
+        Assert.Empty(result.Rooms.Single(room => room.Id == rooms[2].Id).FreeSlots);
+    }
+
+    [Theory]
+    [InlineData("10:30", "12:00", true)]
+    [InlineData("14:00", "16:00", true)]
+    [InlineData("10:00", "11:00", false)]
+    [InlineData("11:00", "13:00", false)]
+    [InlineData("09:00", "18:00", false)]
+    public async Task IntervalSearchRequiresTheWholeIntervalToBeFree(string start, string end, bool bookedRoomFits)
+    {
+        var path = $"/api/rooms?building=A&equipment=projector,whiteboard&date={DateText}&startTime={start}&endTime={end}";
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+
+        Assert.Equal(bookedRoomFits, result!.Rooms.Any(room => room.Id == rooms[0].Id));
+        Assert.Contains(result.Rooms, room => room.Id == rooms[3].Id);
+        Assert.DoesNotContain(result.Rooms, room => room.Id == rooms[1].Id || room.Id == rooms[2].Id);
+    }
+
+    [Theory]
+    [InlineData("10:00", "15:00", 90, true)]
+    [InlineData("10:00", "15:00", 120, false)]
+    [InlineData("11:00", "14:30", 60, true)]
+    [InlineData("11:30", "14:30", 60, false)]
+    [InlineData("12:00", "14:00", 30, false)]
+    [InlineData("09:00", "18:00", 540, false)]
+    public async Task DurationSearchRequiresOneContinuousWindow(string start, string end, int duration, bool fits)
+    {
+        var path = $"/api/rooms?date={DateText}&startTime={start}&endTime={end}&minDuration={duration}";
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+
+        Assert.Equal(fits, result!.Rooms.Any(room => room.Id == rooms[0].Id));
+        Assert.Contains(result.Rooms, room => room.Id == rooms[1].Id);
+        Assert.DoesNotContain(result.Rooms, room => room.Id == rooms[2].Id);
+        Assert.All(result.Rooms.SelectMany(room => room.FreeSlots), slot =>
+        {
+            Assert.True(TimeOnly.Parse(slot.StartTime) >= TimeOnly.Parse(start));
+            Assert.True(TimeOnly.Parse(slot.EndTime) <= TimeOnly.Parse(end));
+            Assert.True((TimeOnly.Parse(slot.EndTime) - TimeOnly.Parse(slot.StartTime)).TotalMinutes >= duration);
+        });
+    }
+
+    [Fact]
+    public async Task DurationSearchClipsWindowsAndCombinesRoomFilters()
+    {
+        var path = $"/api/rooms?date={DateText}&building=A&floor=1&minCapacity=30&equipment=projector,whiteboard&startTime=11:00&endTime=14:30&minDuration=30";
+        var ownIds = rooms.Select(room => room.Id).ToArray();
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+
+        var room = Assert.Single(result!.Rooms, room => ownIds.Contains(room.Id));
+        Assert.Equal(rooms[0].Id, room.Id);
+        Assert.Equal([new FreeSlotResponse("11:00", "12:00"), new FreeSlotResponse("14:00", "14:30")], room.FreeSlots);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AvailabilityBodyAndHeadersUseTheSameServerTime(bool individualRoom)
+    {
+        var path = individualRoom ? $"/api/rooms/{rooms[1].Id}/free-slots?date={DateText}"
+            : $"/api/rooms?date={DateText}";
+
+        using var response = await client.GetAsync(path);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var headerTime = DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(clock.GetUtcNow(), headerTime);
+        Assert.Equal(clock.GetUtcNow().UtcDateTime, body.RootElement.GetProperty("serverTime").GetDateTime());
+        Assert.Equal(DateTimeKind.Utc, body.RootElement.GetProperty("serverTime").GetDateTime().Kind);
+        Assert.Equal("330", response.Headers.GetValues("X-Server-Utc-Offset").Single());
+        Assert.Equal(330, body.RootElement.GetProperty("utcOffset").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("/api/rooms", 200)]
+    [InlineData("/api/rooms?floor=0", 400)]
+    [InlineData("/api/rooms/0", 404)]
+    [InlineData("/api/admin/rooms/unknown", 404)]
+    public async Task ServerTimeHeadersAreAvailableAcrossApiResponses(string path, int status)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("Origin", "http://localhost:5173");
+
+        using var response = await client.SendAsync(request);
+        var exposed = string.Join(",", response.Headers.GetValues("Access-Control-Expose-Headers"));
+
+        Assert.Equal(status, (int)response.StatusCode);
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture));
+        Assert.Equal("330", response.Headers.GetValues("X-Server-Utc-Offset").Single());
+        Assert.Contains("X-Server-Time", exposed);
+        Assert.Contains("X-Server-Utc-Offset", exposed);
+    }
+
+    [Fact]
+    public async Task AdjacentBookingsMergeIntoOneOccupiedInterval()
+    {
+        await using var db = CreateDbContext();
+        db.Bookings.Add(new Booking { UserId = user.Id, RoomId = rooms[0].Id, Date = date, StartTime = new(10, 30), EndTime = new(12, 0) });
+        await db.SaveChangesAsync();
+
+        var result = await client.GetFromJsonAsync<RoomFreeSlotsResponse>($"/api/rooms/{rooms[0].Id}/free-slots?date={DateText}");
+
+        Assert.Equal(rooms[0].Id, result!.RoomId);
+        Assert.Equal(DateText, result.Date);
+        Assert.Equal([new FreeSlotResponse("14:00", "18:00")], result.FreeSlots);
+    }
+
+    [Fact]
+    public async Task EmptyResultsUseSuccessfulArrayOrEnvelope()
+    {
+        var filter = "minCapacity=2147483647";
+
+        var list = await client.GetFromJsonAsync<RoomResponse[]>("/api/rooms?" + filter);
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>($"/api/rooms?{filter}&date={DateText}");
+        var full = await client.GetFromJsonAsync<RoomFreeSlotsResponse>($"/api/rooms/{rooms[2].Id}/free-slots?date={DateText}");
+
+        Assert.Empty(list!);
+        Assert.Empty(result!.Rooms);
+        Assert.Equal(DateText, result.Date);
+        Assert.Empty(full!.FreeSlots);
+    }
+
+    [Theory]
+    [InlineData("floor=0")]
+    [InlineData("floor=-1")]
+    [InlineData("floor=1.5")]
+    [InlineData("floor=abc")]
+    [InlineData("floor=")]
+    [InlineData("floor=2147483648")]
+    [InlineData("minDuration=60")]
+    [InlineData("date=2035-01-01&minDuration=60")]
+    [InlineData("startTime=12:00&endTime=16:00&minDuration=60")]
+    [InlineData("date=2035-01-01&startTime=12:00&minDuration=60")]
+    [InlineData("date=2035-01-01&endTime=16:00&minDuration=60")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=0")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=-30")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=45")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=270")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=60.0")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=abc")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=2147483648")]
+    [InlineData("building=Z")]
+    [InlineData("building=a")]
+    [InlineData("building=")]
+    [InlineData("minCapacity=0")]
+    [InlineData("minCapacity=-1")]
+    [InlineData("minCapacity=abc")]
+    [InlineData("minCapacity=1.5")]
+    [InlineData("minCapacity=")]
+    [InlineData("equipment=printer")]
+    [InlineData("equipment=Projector")]
+    [InlineData("equipment=")]
+    [InlineData("equipment=projector,")]
+    [InlineData("date=")]
+    [InlineData("date=2026-02-29")]
+    [InlineData("date=2035-1-01")]
+    [InlineData("date=2000-01-01")]
+    [InlineData("startTime=09:00&endTime=10:00")]
+    [InlineData("date=2035-01-01&startTime=09:00")]
+    [InlineData("date=2035-01-01&endTime=10:00")]
+    [InlineData("date=2035-01-01&startTime=09:00:00&endTime=10:00")]
+    [InlineData("date=2035-01-01&startTime=9:00&endTime=10:00")]
+    [InlineData("date=2035-01-01&startTime=09:15&endTime=10:00")]
+    [InlineData("date=2035-01-01&startTime=08:30&endTime=10:00")]
+    [InlineData("date=2035-01-01&startTime=17:30&endTime=18:30")]
+    [InlineData("date=2035-01-01&startTime=10:00&endTime=10:00")]
+    [InlineData("date=2035-01-01&startTime=11:00&endTime=10:00")]
+    public async Task InvalidFiltersReturnValidationError(string query)
+    {
+        var path = "/api/rooms?" + query;
+
+        using var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("?date=")]
+    [InlineData("?date=bad")]
+    [InlineData("?date=2000-01-01")]
+    public async Task FreeSlotsRequireValidDate(string query)
+    {
+        var path = $"/api/rooms/{rooms[0].Id}/free-slots{query}";
+
+        using var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
+    [Theory]
+    [InlineData("/api/rooms/0", HttpStatusCode.NotFound, "ROOM_NOT_FOUND")]
+    [InlineData("/api/rooms/-1", HttpStatusCode.NotFound, "ROOM_NOT_FOUND")]
+    [InlineData("/api/rooms/2147483647", HttpStatusCode.NotFound, "ROOM_NOT_FOUND")]
+    [InlineData("/api/rooms/text", HttpStatusCode.BadRequest, "VALIDATION_ERROR")]
+    [InlineData("/api/rooms/0/free-slots?date=2035-01-01", HttpStatusCode.NotFound, "ROOM_NOT_FOUND")]
+    public async Task InvalidOrMissingRoomReturnsContractError(string path, HttpStatusCode status, string code)
+    {
+        var requestPath = path;
+
+        using var response = await client.GetAsync(requestPath);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(status, response.StatusCode);
+        Assert.Equal(code, error!.Code);
+    }
+
+    [Theory]
+    [InlineData("/api/rooms")]
+    [InlineData("/api/rooms?date=2035-01-01")]
+    [InlineData("/api/rooms/1")]
+    [InlineData("/api/rooms/1/free-slots?date=2035-01-01")]
+    public async Task MissingTokenReturnsUnauthorized(string path)
+    {
+        client.DefaultRequestHeaders.Authorization = null;
+
+        using var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("UNAUTHORIZED", error!.Code);
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task SwaggerDescribesBothSearchResponseShapes()
+    {
+        var path = "/swagger/v1/swagger.json";
+
+        using var schema = JsonDocument.Parse(await client.GetStringAsync(path));
+        var response = schema.RootElement.GetProperty("paths").GetProperty("/api/rooms").GetProperty("get")
+            .GetProperty("responses").GetProperty("200").GetProperty("content").GetProperty("application/json").GetProperty("schema");
+
+        Assert.Equal(2, response.GetProperty("oneOf").GetArrayLength());
+        Assert.True(schema.RootElement.GetProperty("paths").GetProperty("/api/rooms").GetProperty("get")
+            .GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.Equal("bearer", schema.RootElement.GetProperty("components").GetProperty("securitySchemes")
+            .GetProperty("Bearer").GetProperty("scheme").GetString());
+        var search = schema.RootElement.GetProperty("paths").GetProperty("/api/rooms").GetProperty("get");
+        Assert.Contains(search.GetProperty("parameters").EnumerateArray(), parameter =>
+            parameter.GetProperty("name").GetString() == "minDuration" && parameter.GetProperty("schema").GetProperty("type").GetString() == "integer");
+        Assert.Contains(search.GetProperty("parameters").EnumerateArray(), parameter =>
+            parameter.GetProperty("name").GetString() == "floor" && parameter.GetProperty("schema").GetProperty("type").GetString() == "integer");
+        Assert.True(search.GetProperty("responses").GetProperty("200").GetProperty("headers").TryGetProperty("X-Server-Time", out _));
+        Assert.True(search.GetProperty("responses").GetProperty("400").GetProperty("headers").TryGetProperty("X-Server-Utc-Offset", out _));
+    }
+
+    [Fact]
+    public async Task AdminCreatesRoomWithGeneratedIdAndNormalizedValues()
+    {
+        await LoginAsAdminAsync();
+        var payload = WriteRequest();
+        payload["name"] = "  " + suffix + "_created  ";
+        payload["equipment"] = new[] { "projector", "projector", "audio" };
+        payload["id"] = int.MaxValue;
+        payload["unknown"] = "ignored";
+
+        using var response = await client.PostAsJsonAsync("/api/admin/rooms", payload);
+        var created = await response.Content.ReadFromJsonAsync<RoomResponse>();
+        var card = await client.GetFromJsonAsync<RoomResponse>(response.Headers.Location!);
+        var list = await client.GetFromJsonAsync<RoomResponse[]>("/api/rooms?building=D&equipment=audio");
+        await using var db = CreateDbContext();
+        var saved = await db.Rooms.AsNoTracking().SingleAsync(room => room.Name == suffix + "_created");
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.InRange(created!.Id, 1, int.MaxValue - 1);
+        Assert.Equal(saved.Id, created.Id);
+        Assert.Equal(suffix + "_created", created.Name);
+        Assert.Equal("D", created.Building);
+        Assert.Equal(2, created.Floor);
+        Assert.Equal(25, created.Capacity);
+        Assert.Equal(new[] { "projector", "audio" }, created.Equipment);
+        Assert.Equal(created.Name, card!.Name);
+        Assert.Contains(list!, room => room.Id == created.Id);
+    }
+
+    [Fact]
+    public async Task AdminFullyUpdatesRoomWithoutChangingBookings()
+    {
+        await LoginAsAdminAsync();
+        var payload = WriteRequest();
+        payload["equipment"] = Array.Empty<string>();
+        payload["id"] = rooms[1].Id;
+        await using var db = CreateDbContext();
+        var before = await db.Bookings.AsNoTracking().Where(booking => booking.RoomId == rooms[0].Id).OrderBy(booking => booking.Id)
+            .Select(booking => new { booking.Id, booking.UserId, booking.Date, booking.StartTime, booking.EndTime, booking.Status, booking.Comment }).ToListAsync();
+
+        using var response = await client.PutAsJsonAsync($"/api/admin/rooms/{rooms[0].Id}", payload);
+        var updated = await response.Content.ReadFromJsonAsync<RoomResponse>();
+        var card = await client.GetFromJsonAsync<RoomResponse>($"/api/rooms/{rooms[0].Id}");
+        var search = await client.GetFromJsonAsync<AvailableRoomsResponse>($"/api/rooms?building=D&date={DateText}");
+        var history = await client.GetFromJsonAsync<BookingResponse[]>($"/api/admin/bookings?roomId={rooms[0].Id}");
+        var after = await db.Bookings.AsNoTracking().Where(booking => booking.RoomId == rooms[0].Id).OrderBy(booking => booking.Id)
+            .Select(booking => new { booking.Id, booking.UserId, booking.Date, booking.StartTime, booking.EndTime, booking.Status, booking.Comment }).ToListAsync();
+        var unchanged = await db.Rooms.AsNoTracking().SingleAsync(room => room.Id == rooms[1].Id);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(rooms[0].Id, updated!.Id);
+        Assert.Equal(suffix + "_created", updated.Name);
+        Assert.Equal("D", updated.Building);
+        Assert.Equal(2, updated.Floor);
+        Assert.Equal(25, updated.Capacity);
+        Assert.Empty(updated.Equipment);
+        Assert.Equal(updated.Name, card!.Name);
+        Assert.Equal(before, after);
+        Assert.All(history!, booking => Assert.Equal(updated.Name, booking.RoomName));
+        Assert.Equal(rooms[1].Name, unchanged.Name);
+        Assert.Equal([new FreeSlotResponse("10:30", "12:00"), new FreeSlotResponse("14:00", "18:00")],
+            search!.Rooms.Single(room => room.Id == rooms[0].Id).FreeSlots);
+    }
+
+    [Theory]
+    [InlineData("name")]
+    [InlineData("building")]
+    [InlineData("floor")]
+    [InlineData("capacity")]
+    [InlineData("equipment")]
+    public async Task RoomWritesRequireEveryField(string field)
+    {
+        await LoginAsAdminAsync();
+        var payload = WriteRequest();
+        payload.Remove(field);
+
+        using var creation = await client.PostAsJsonAsync("/api/admin/rooms", payload);
+        using var update = await client.PutAsJsonAsync($"/api/admin/rooms/{rooms[0].Id}", payload);
+        var creationError = await creation.Content.ReadFromJsonAsync<ApiError>();
+        var updateError = await update.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var saved = await db.Rooms.AsNoTracking().SingleAsync(room => room.Id == rooms[0].Id);
+
+        Assert.Equal(HttpStatusCode.BadRequest, creation.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, update.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", creationError!.Code);
+        Assert.Equal("VALIDATION_ERROR", updateError!.Code);
+        Assert.Equal(rooms[0].Name, saved.Name);
+        Assert.False(await db.Rooms.AnyAsync(room => room.Name == suffix + "_created"));
+    }
+
+    [Theory]
+    [InlineData("name", "null")]
+    [InlineData("name", "\"   \"")]
+    [InlineData("building", "\"a\"")]
+    [InlineData("building", "\"E\"")]
+    [InlineData("floor", "0")]
+    [InlineData("floor", "-1")]
+    [InlineData("floor", "\"2\"")]
+    [InlineData("floor", "1.5")]
+    [InlineData("floor", "null")]
+    [InlineData("capacity", "0")]
+    [InlineData("capacity", "-1")]
+    [InlineData("capacity", "\"25\"")]
+    [InlineData("capacity", "2147483648")]
+    [InlineData("equipment", "null")]
+    [InlineData("equipment", "[null]")]
+    [InlineData("equipment", "[\"printer\"]")]
+    [InlineData("equipment", "[\"Projector\"]")]
+    [InlineData("equipment", "\"projector\"")]
+    public async Task RoomWritesRejectInvalidValues(string field, string json)
+    {
+        await LoginAsAdminAsync();
+        var payload = WriteRequest();
+        payload[field] = JsonSerializer.Deserialize<JsonElement>(json);
+
+        using var creation = await client.PostAsJsonAsync("/api/admin/rooms", payload);
+        using var update = await client.PutAsJsonAsync($"/api/admin/rooms/{rooms[0].Id}", payload);
+        var error = await update.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, creation.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, update.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
+    [Fact]
+    public async Task DuplicateNamesAreValidationErrorsAndOwnNameCanBeRetained()
+    {
+        await LoginAsAdminAsync();
+        var payload = WriteRequest();
+        payload["name"] = " " + rooms[1].Name + " ";
+
+        using var creation = await client.PostAsJsonAsync("/api/admin/rooms", payload);
+        using var duplicateUpdate = await client.PutAsJsonAsync($"/api/admin/rooms/{rooms[0].Id}", payload);
+        var creationError = await creation.Content.ReadFromJsonAsync<ApiError>();
+        var updateError = await duplicateUpdate.Content.ReadFromJsonAsync<ApiError>();
+        payload["name"] = rooms[0].Name;
+        using var ownName = await client.PutAsJsonAsync($"/api/admin/rooms/{rooms[0].Id}", payload);
+        await using var db = CreateDbContext();
+        var names = await db.Rooms.Where(room => room.Id == rooms[0].Id || room.Id == rooms[1].Id).Select(room => room.Name).ToArrayAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, creation.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, duplicateUpdate.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", creationError!.Code);
+        Assert.Equal("VALIDATION_ERROR", updateError!.Code);
+        Assert.Equal(HttpStatusCode.OK, ownName.StatusCode);
+        Assert.Contains(rooms[0].Name, names);
+        Assert.Contains(rooms[1].Name, names);
+    }
+
+    [Fact]
+    public async Task ConcurrentRoomCreationSavesOneUniqueName()
+    {
+        await LoginAsAdminAsync();
+        var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+        counter.BeforeWrite = async cancellationToken =>
+        {
+            if (Interlocked.Increment(ref arrivals) == 2)
+                bothReady.TrySetResult();
+            await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+        var payload = WriteRequest();
+
+        var responses = await Task.WhenAll(client.PostAsJsonAsync("/api/admin/rooms", payload), client.PostAsJsonAsync("/api/admin/rooms", payload));
+        var statuses = responses.Select(response => response.StatusCode).ToArray();
+        var errors = new List<string>();
+        foreach (var response in responses)
+        {
+            if (response.StatusCode == HttpStatusCode.BadRequest)
+                errors.Add((await response.Content.ReadFromJsonAsync<ApiError>())!.Code);
+            response.Dispose();
+        }
+        await using var db = CreateDbContext();
+        var count = await db.Rooms.CountAsync(room => room.Name == suffix + "_created");
+
+        Assert.Single(statuses, status => status == HttpStatusCode.Created);
+        Assert.Single(statuses, status => status == HttpStatusCode.BadRequest);
+        Assert.Equal(new[] { "VALIDATION_ERROR" }, errors);
+        Assert.Equal(1, count);
+    }
+
+    [Theory]
+    [InlineData("0", HttpStatusCode.NotFound)]
+    [InlineData("-1", HttpStatusCode.NotFound)]
+    [InlineData("2147483647", HttpStatusCode.NotFound)]
+    [InlineData("text", HttpStatusCode.BadRequest)]
+    public async Task AdminUpdateAndDeleteRejectMissingOrInvalidId(string id, HttpStatusCode status)
+    {
+        await LoginAsAdminAsync();
+
+        using var response = await client.PutAsJsonAsync("/api/admin/rooms/" + id, WriteRequest());
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        using var deletion = await client.DeleteAsync("/api/admin/rooms/" + id);
+        var deletionError = await deletion.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(status, response.StatusCode);
+        Assert.Equal(status == HttpStatusCode.NotFound ? "ROOM_NOT_FOUND" : "VALIDATION_ERROR", error!.Code);
+        Assert.Equal(status, deletion.StatusCode);
+        Assert.Equal(status == HttpStatusCode.NotFound ? "ROOM_NOT_FOUND" : "VALIDATION_ERROR", deletionError!.Code);
+    }
+
+    [Fact]
+    public async Task RoomDeletedBeforeUpdateReturnsNotFound()
+    {
+        await LoginAsAdminAsync();
+        counter.BeforeWrite = async cancellationToken =>
+        {
+            await using var db = CreateDbContext();
+            await db.Rooms.Where(room => room.Id == rooms[1].Id).ExecuteDeleteAsync(cancellationToken);
+        };
+
+        using var response = await client.PutAsJsonAsync($"/api/admin/rooms/{rooms[1].Id}", WriteRequest());
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("ROOM_NOT_FOUND", error!.Code);
+    }
+
+    [Fact]
+    public async Task AdminDeletesRoomWithoutBookingsAndRepeatedDeletionReturnsNotFound()
+    {
+        await LoginAsAdminAsync();
+        var roomId = rooms[1].Id;
+
+        using var response = await client.DeleteAsync($"/api/admin/rooms/{roomId}");
+        var body = await response.Content.ReadAsStringAsync();
+        using var card = await client.GetAsync($"/api/rooms/{roomId}");
+        using var slots = await client.GetAsync($"/api/rooms/{roomId}/free-slots?date={DateText}");
+        var search = await client.GetFromJsonAsync<AvailableRoomsResponse>($"/api/rooms?date={DateText}");
+        using var repeated = await client.DeleteAsync($"/api/admin/rooms/{roomId}");
+        var error = await repeated.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var exists = await db.Rooms.AnyAsync(room => room.Id == roomId);
+        var otherRooms = await db.Rooms.CountAsync(room => rooms.Select(item => item.Id).Contains(room.Id));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Empty(body);
+        Assert.Equal(HttpStatusCode.NotFound, card.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, slots.StatusCode);
+        Assert.DoesNotContain(search!.Rooms, room => room.Id == roomId);
+        Assert.Equal(HttpStatusCode.NotFound, repeated.StatusCode);
+        Assert.Equal("ROOM_NOT_FOUND", error!.Code);
+        Assert.False(exists);
+        Assert.Equal(3, otherRooms);
+    }
+
+    [Theory]
+    [InlineData("active")]
+    [InlineData("cancelled")]
+    public async Task RoomWithAnyBookingCannotBeDeleted(string status)
+    {
+        await LoginAsAdminAsync();
+        await using var db = CreateDbContext();
+        var booking = new Booking
+        {
+            RoomId = rooms[1].Id, UserId = user.Id, Date = date.AddDays(-10), StartTime = new(9, 0), EndTime = new(10, 0),
+            Status = status, Comment = "Preserved history"
+        };
+        db.Bookings.Add(booking);
+        await db.SaveChangesAsync();
+
+        using var response = await client.DeleteAsync($"/api/admin/rooms/{rooms[1].Id}");
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == booking.Id);
+        var card = await client.GetFromJsonAsync<RoomResponse>($"/api/rooms/{rooms[1].Id}");
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("ROOM_HAS_BOOKINGS", error!.Code);
+        Assert.Equal(rooms[1].Id, card!.Id);
+        Assert.Equal(booking.RoomId, saved.RoomId);
+        Assert.Equal(booking.UserId, saved.UserId);
+        Assert.Equal(booking.Date, saved.Date);
+        Assert.Equal(booking.StartTime, saved.StartTime);
+        Assert.Equal(booking.EndTime, saved.EndTime);
+        Assert.Equal(status, saved.Status);
+        Assert.Equal(booking.Comment, saved.Comment);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ConcurrentBookingAndRoomDeletionPreserveForeignKey(bool bookingWins)
+    {
+        using var student = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = false });
+        var bookingUser = new User { Login = "rooms_" + suffix + "_student", DisplayName = "Booking Student", Role = "student" };
+        bookingUser.PasswordHash = new PasswordHasher<User>().HashPassword(bookingUser, "password");
+        await using var setup = CreateDbContext();
+        setup.Users.Add(bookingUser);
+        await setup.SaveChangesAsync();
+        using var login = await student.PostAsJsonAsync("/api/auth/login", new { login = bookingUser.Login, password = "password" });
+        login.EnsureSuccessStatusCode();
+        var auth = await login.Content.ReadFromJsonAsync<AuthResponse>();
+        student.DefaultRequestHeaders.Authorization = new("Bearer", auth!.Token);
+        await LoginAsAdminAsync();
+        var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var winnerCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+        async Task WaitForBoth(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref arrivals) == 2)
+                bothReady.TrySetResult();
+            await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+        counter.BeforeDelete = async cancellationToken =>
+        {
+            await WaitForBoth(cancellationToken);
+            if (bookingWins)
+                await winnerCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+        counter.BeforeBookingInsert = async cancellationToken =>
+        {
+            await WaitForBoth(cancellationToken);
+            if (!bookingWins)
+                await winnerCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+        var payload = new { roomId = rooms[1].Id, date = DateText, startTime = "14:00", endTime = "15:00" };
+
+        var creationTask = student.PostAsJsonAsync("/api/bookings", payload);
+        var deletionTask = client.DeleteAsync($"/api/admin/rooms/{rooms[1].Id}");
+        using var winner = await (bookingWins ? creationTask : deletionTask);
+        winnerCompleted.TrySetResult();
+        using var loser = await (bookingWins ? deletionTask : creationTask);
+        var creation = bookingWins ? winner : loser;
+        var deletion = bookingWins ? loser : winner;
+        var error = await loser.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var roomExists = await db.Rooms.AnyAsync(room => room.Id == rooms[1].Id);
+        var bookings = await db.Bookings.AsNoTracking().Where(booking => booking.RoomId == rooms[1].Id).ToListAsync();
+
+        Assert.Equal(bookingWins ? HttpStatusCode.Created : HttpStatusCode.NotFound, creation.StatusCode);
+        Assert.Equal(bookingWins ? HttpStatusCode.Conflict : HttpStatusCode.NoContent, deletion.StatusCode);
+        Assert.Equal(bookingWins ? "ROOM_HAS_BOOKINGS" : "ROOM_NOT_FOUND", error!.Code);
+        Assert.Equal(bookingWins, roomExists);
+        Assert.Equal(bookingWins ? 1 : 0, bookings.Count);
+        Assert.All(bookings, booking => Assert.Equal(bookingUser.Id, booking.UserId));
+    }
+
+    [Theory]
+    [InlineData("anonymous")]
+    [InlineData("student")]
+    [InlineData("malformed")]
+    [InlineData("forged")]
+    [InlineData("expired")]
+    [InlineData("issuer")]
+    [InlineData("audience")]
+    [InlineData("role_changed")]
+    [InlineData("deleted")]
+    [InlineData("promoted")]
+    public async Task AdministrativeRoutesAreHiddenBeforeValidation(string state)
+    {
+        if (state is not ("student" or "promoted"))
+            await LoginAsAdminAsync();
+        await using var db = CreateDbContext();
+        if (state == "role_changed")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "student"));
+        if (state == "promoted")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        if (state == "deleted")
+        {
+            await db.RefreshTokens.Where(token => token.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Bookings.Where(booking => booking.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Users.Where(item => item.Id == user.Id).ExecuteDeleteAsync();
+        }
+        if (state == "anonymous")
+            client.DefaultRequestHeaders.Authorization = null;
+        if (state == "malformed")
+            client.DefaultRequestHeaders.Authorization = new("Bearer", "admin");
+        if (state is "forged" or "expired" or "issuer" or "audience")
+        {
+            var now = DateTime.UtcNow;
+            var token = new JwtSecurityToken(state == "issuer" ? "WrongIssuer" : "CampusFlow",
+                state == "audience" ? "WrongAudience" : "CampusFlowClient",
+                [new Claim("sub", user.Id.ToString(CultureInfo.InvariantCulture)), new Claim("role", "admin")],
+                now.AddHours(-2), state == "expired" ? now.AddHours(-1) : now.AddHours(1),
+                new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(state == "forged" ? signingKey + "wrong" : signingKey)), SecurityAlgorithms.HmacSha256));
+            client.DefaultRequestHeaders.Authorization = new("Bearer", new JwtSecurityTokenHandler().WriteToken(token));
+        }
+        client.DefaultRequestHeaders.Add("role", "admin");
+
+        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01&building=invalid&limit=0&offset=-1&sort=user");
+        using var cancellation = await client.DeleteAsync("/api/admin/bookings/text");
+        using var creation = await client.PostAsJsonAsync("/api/admin/rooms", new { role = "admin", floor = "bad" });
+        using var update = await client.PutAsJsonAsync("/api/admin/rooms/text", new { role = "admin" });
+        using var deletion = await client.DeleteAsync($"/api/admin/rooms/{rooms[1].Id}");
+        using var invalidDeletion = await client.DeleteAsync("/api/admin/rooms/text");
+        using var malformed = await client.PostAsync("/api/admin/rooms", new StringContent("{", Encoding.UTF8, "application/json"));
+        using var wrongMethod = await client.GetAsync("/api/admin/rooms");
+        using var unknown = await client.GetAsync("/api/admin/missing");
+        using var users = await client.GetAsync("/api/admin/users");
+        using var stats = await client.GetAsync("/api/admin/stats?dateFrom=bad&dateTo=2000-01-01&building=invalid");
+        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown, users, stats };
+        var bodies = await Task.WhenAll(responses.Select(response => response.Content.ReadAsStringAsync()));
+
+        Assert.All(responses, response => Assert.Equal(HttpStatusCode.NotFound, response.StatusCode));
+        Assert.All(responses, response => Assert.Empty(response.Headers.WwwAuthenticate));
+        Assert.All(responses, response => Assert.False(response.Headers.Contains("X-Total-Count")));
+        Assert.All(responses, response => Assert.False(response.Headers.Contains("X-Active-Count")));
+        Assert.All(bodies, body => Assert.Empty(body));
+        Assert.False(await db.Rooms.AnyAsync(room => room.Name == suffix + "_created"));
+        Assert.True(await db.Rooms.AnyAsync(room => room.Id == rooms[1].Id));
+    }
+
+    [Fact]
+    public async Task SwaggerDocumentsAdministrativeRoomWrites()
+    {
+        var path = "/swagger/v1/swagger.json";
+
+        using var schema = JsonDocument.Parse(await client.GetStringAsync(path));
+        var creation = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/rooms").GetProperty("post");
+        var update = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/rooms/{id}").GetProperty("put");
+        var deletion = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/rooms/{id}").GetProperty("delete");
+        var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("RoomWriteRequest");
+
+        Assert.True(creation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(update.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(deletion.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(deletion.GetProperty("responses").TryGetProperty("204", out _));
+        Assert.True(deletion.GetProperty("responses").TryGetProperty("404", out _));
+        Assert.True(deletion.GetProperty("responses").TryGetProperty("409", out _));
+        Assert.False(deletion.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.False(deletion.GetProperty("responses").TryGetProperty("403", out _));
+        Assert.True(creation.GetProperty("responses").TryGetProperty("201", out _));
+        Assert.True(update.GetProperty("responses").TryGetProperty("200", out _));
+        Assert.True(creation.GetProperty("responses").TryGetProperty("404", out _));
+        Assert.False(creation.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.False(update.GetProperty("responses").TryGetProperty("403", out _));
+        Assert.Equal(new[] { "building", "capacity", "equipment", "floor", "name" }, requestSchema.GetProperty("required")
+            .EnumerateArray().Select(item => item.GetString()).Order().ToArray());
+        Assert.True(!requestSchema.TryGetProperty("additionalProperties", out var additional) || additional.ValueKind == JsonValueKind.True);
+    }
+
+    private Dictionary<string, object?> WriteRequest() => new()
+    {
+        ["name"] = suffix + "_created", ["building"] = "D", ["floor"] = 2, ["capacity"] = 25, ["equipment"] = new[] { "projector" }
+    };
+
+    private async Task LoginAsAdminAsync()
+    {
+        await using var db = CreateDbContext();
+        await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        using var response = await client.PostAsJsonAsync("/api/auth/login", new { login = user.Login, password = "password" });
+        response.EnsureSuccessStatusCode();
+        var auth = await response.Content.ReadFromJsonAsync<AuthResponse>();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", auth!.Token);
+    }
+
+    private CampusFlowDbContext CreateDbContext() => new(new DbContextOptionsBuilder<CampusFlowDbContext>().UseNpgsql(connection).Options);
+
+    private sealed class TestClock : TimeProvider
+    {
+        private DateTimeOffset now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => now;
+        public void SetLocal(DateTime local) => now = new DateTimeOffset(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), LocalTimeZone.BaseUtcOffset).ToUniversalTime();
+        public override TimeZoneInfo LocalTimeZone { get; } = TimeZoneInfo.CreateCustomTimeZone("RoomTests", TimeSpan.FromMinutes(330), "RoomTests", "RoomTests");
+    }
+
+    private sealed class QueryCounter : DbCommandInterceptor
+    {
+        public int Reads;
+        public Func<CancellationToken, Task>? BeforeWrite { get; set; }
+        public Func<CancellationToken, Task>? BeforeDelete { get; set; }
+        public Func<CancellationToken, Task>? BeforeBookingInsert { get; set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("DELETE FROM \"Rooms\"") && BeforeDelete is not null)
+                await BeforeDelete(cancellationToken);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FROM \"Rooms\"") || command.CommandText.Contains("FROM \"Bookings\""))
+                Interlocked.Increment(ref Reads);
+            if ((command.CommandText.Contains("INSERT INTO \"Rooms\"") || command.CommandText.Contains("UPDATE \"Rooms\"")) && BeforeWrite is not null)
+                await BeforeWrite(cancellationToken);
+            if (command.CommandText.Contains("INSERT INTO \"Bookings\"") && BeforeBookingInsert is not null)
+                await BeforeBookingInsert(cancellationToken);
+            return result;
+        }
+    }
+}

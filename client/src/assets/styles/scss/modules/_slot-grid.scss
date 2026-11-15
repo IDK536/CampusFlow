@@ -1,0 +1,233 @@
+@use '../variables' as *;
+
+.slot-grid {
+  position: relative;
+
+  // Шкала как в календаре: одна полоса, свободное — пустое, занятое — штриховка, выбранное — отрезок.
+  &__track {
+    display: grid;
+    grid-template-columns: repeat(18, minmax(0, 1fr));
+    border: 1px solid $line-2;
+    position: relative;
+    border-radius: 10px;
+    background: $surface-2;
+    overflow: hidden;
+
+    &.is-shaking {
+      animation: shake 0.45s both;
+    }
+  }
+
+  &__cell {
+    position: relative;
+    height: 44px;
+    border-left: 1px dashed $line;
+    transition: background-color 0.12s;
+
+    &:first-child {
+      border-left: 0;
+    }
+
+    &.is-hour {
+      border-left: 1px solid $line-2;
+    }
+
+    &--free:hover {
+      background: $violet-50;
+    }
+
+    &--busy {
+      @include hatch;
+      cursor: not-allowed;
+    }
+
+    // Прошедшее время — приглушённое и «выцветшее», чтобы не путать со свободным.
+    &--past {
+      background: $past-bg;
+      background-image: linear-gradient(0deg, rgba(128, 128, 140, 0.18), rgba(128, 128, 140, 0.18));
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    &.is-selected {
+      background: $violet;
+      border-left-color: transparent;
+    }
+
+    &.is-first {
+      border-radius: 8px 0 0 8px;
+    }
+
+    &.is-last {
+      border-radius: 0 8px 8px 0;
+    }
+
+    &.is-first.is-last {
+      border-radius: 8px;
+    }
+
+    &.is-anchor {
+      box-shadow: inset 0 0 0 2px $accent-line;
+    }
+
+    &.is-conflict {
+      background: $red;
+      animation: conflictPulse 1s 2 ease-in-out;
+    }
+  }
+
+  // Подпись времени — только на часовых ячейках и при наведении, чтобы шкала не рябила.
+  &__time {
+    display: none;
+    position: absolute;
+    left: 50%;
+    bottom: 4px;
+    transform: translateX(-50%) rotate(-90deg);
+    transform-origin: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: rgba(21, 18, 42, 0.55);
+    opacity: 0;
+    white-space: nowrap;
+    pointer-events: none;
+    transition: opacity 0.12s;
+  }
+
+  &__cell:hover &__time,
+  &__cell.is-first &__time {
+    opacity: 1;
+  }
+
+  &__scale {
+    position: relative;
+    height: 16px;
+    margin-top: 6px;
+    color: $muted;
+    font-size: 12px;
+    font-weight: 600;
+
+    span {
+      position: absolute;
+      transform: translateX(-50%);
+
+      &:first-child {
+        transform: none;
+      }
+
+      &:last-child {
+        transform: translateX(-100%);
+      }
+    }
+  }
+
+  // Отметка текущего времени поверх шкалы.
+  &__now-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: $red;
+    pointer-events: none;
+  }
+
+  &__now {
+    position: absolute;
+    top: -20px;
+    transform: translateX(-50%);
+    padding: 1px 6px;
+    border-radius: 6px;
+    background: $red;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  &__hint {
+    margin-top: 8px;
+    color: $accent-text;
+    font-size: 13px;
+    font-weight: 600;
+  }
+}
+
+@keyframes conflictPulse {
+  50% {
+    background: #ff7676;
+  }
+}
+
+.slot-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: $muted;
+  font-size: 12px;
+
+  li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+.free-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+
+  &__label {
+    color: $muted;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  &__list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  &__none {
+    color: $muted;
+    font-size: 14px;
+  }
+}
+
+.free-slot {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid $lime-border;
+  border-radius: $radius-xs;
+  background: $lime-50;
+  font-weight: 700;
+  font-size: 14px;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s;
+
+  &:hover:not(:disabled) {
+    border-color: $lime-text;
+    background: $lime;
+    color: $on-lime;
+
+    .free-slot__len {
+      color: $on-lime-2;
+    }
+  }
+
+  &:disabled {
+    cursor: default;
+  }
+
+  &__len {
+    color: $lime-text;
+    font-size: 12px;
+    font-weight: 600;
+  }
+}

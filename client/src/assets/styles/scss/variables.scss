@@ -1,0 +1,96 @@
+// Цвета — семантические токены. Значения для светлой, тёмной и AMOLED-темы лежат в base/themes.scss,
+// здесь только ссылки на CSS-переменные, чтобы тема переключалась без перезагрузки.
+
+// Бренд
+$violet: var(--violet);
+$violet-hover: var(--violet-hover);
+$violet-50: var(--violet-50);
+$violet-100: var(--violet-100);
+$accent-text: var(--accent-text);
+$accent-strong-text: var(--accent-strong-text);
+$accent-line: var(--accent-line);
+
+$lime: var(--lime-solid);
+$lime-hover: var(--lime-hover);
+$lime-50: var(--lime-50);
+$lime-border: var(--lime-border);
+$lime-text: var(--lime-text);
+
+$lilac: #c49bff;
+$lilac-50: var(--lilac-50);
+
+// Поверхности и текст
+$bg: var(--bg);
+$surface: var(--surface);
+$surface-2: var(--surface-2);
+$surface-3: var(--surface-3);
+$surface-muted: var(--surface-muted);
+$surface-raised: var(--surface-raised);
+$row-hover: var(--row-hover);
+$track: var(--track);
+
+$ink: var(--text);
+$ink-2: var(--text-2);
+$muted: var(--muted);
+$faint: var(--faint);
+$line: var(--line);
+$line-2: var(--line-2);
+
+$inverse-bg: var(--inverse-bg);
+$inverse-text: var(--inverse-text);
+
+// Текст на цветных плашках — одинаковый во всех темах.
+$on-accent: #ffffff;
+$on-lime: #15122a;
+$on-lime-2: rgba(21, 18, 42, 0.68);
+
+// Статусы
+$red: var(--red);
+$red-hover: var(--red-hover);
+$red-50: var(--red-50);
+$red-border: var(--red-border);
+$warn: var(--warn);
+
+// Занятость
+$busy-bg: var(--busy-bg);
+$busy-stripe: var(--busy-stripe);
+$past-bg: var(--past-bg);
+$map-free-bg: var(--map-free-bg);
+$map-free-border: var(--map-free-border);
+$map-free-bar: var(--map-free-bar);
+$map-partial-bg: var(--map-partial-bg);
+$map-partial-border: var(--map-partial-border);
+$map-partial-bar: var(--map-partial-bar);
+
+$font: 'Golos Text', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+
+$radius-xs: 6px;
+$radius-sm: 10px;
+$radius: 14px;
+$radius-lg: 24px;
+// «Лист» — фирменная форма из кейса: скруглён один угол.
+$leaf: 4px $radius-lg 4px 4px;
+
+$shadow-sm: var(--shadow-sm);
+$shadow: var(--shadow);
+$shadow-lg: var(--shadow-lg);
+
+$ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+$container: 1320px;
+
+@mixin below($width) {
+  @media (max-width: $width) {
+    @content;
+  }
+}
+
+@mixin focus-ring {
+  outline: 2px solid $accent-line;
+  outline-offset: 2px;
+}
+
+@mixin hatch($color: $busy-stripe, $bg: $busy-bg) {
+  background-color: $bg;
+  background-image: repeating-linear-gradient(-45deg, $color 0 2px, transparent 2px 7px);
+}

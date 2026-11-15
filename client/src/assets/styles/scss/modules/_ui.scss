@@ -1,0 +1,1067 @@
+@use '../variables' as *;
+
+// ---------- Кнопки ----------
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: $radius-sm;
+  border: 1px solid transparent;
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    transform 0.1s;
+
+  &:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+  }
+
+  &--primary {
+    background: $violet;
+    color: $on-accent;
+
+    &:hover:not(:disabled) {
+      background: $violet-hover;
+    }
+  }
+
+  &--secondary {
+    background: $lime;
+    color: $on-lime;
+
+    &:hover:not(:disabled) {
+      background: $lime-hover;
+    }
+  }
+
+  &--ghost {
+    background: $surface;
+    border-color: $line-2;
+    color: $ink;
+
+    &:hover:not(:disabled) {
+      border-color: $ink-2;
+    }
+  }
+
+  &--danger {
+    background: $red;
+    color: var(--on-red);
+
+    &:hover:not(:disabled) {
+      background: $red-hover;
+    }
+  }
+
+  &--danger-ghost {
+    background: transparent;
+    border-color: $red-border;
+    color: $red;
+
+    &:hover:not(:disabled) {
+      background: $red-50;
+      border-color: $red;
+    }
+  }
+
+  &--sm {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  &--block {
+    width: 100%;
+  }
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: $radius-sm;
+  color: $ink-2;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+
+  &:hover:not(:disabled) {
+    background: $violet-50;
+    color: $accent-text;
+  }
+
+  &--danger:hover:not(:disabled) {
+    background: $red-50;
+    color: $red;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+  }
+}
+
+.link-button {
+  color: $accent-text;
+  font-weight: 600;
+  font-size: 14px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+
+  &:hover {
+    color: $accent-strong-text;
+  }
+}
+
+// ---------- Поля ----------
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+
+  &__label {
+    font-size: 13px;
+    font-weight: 600;
+    color: $ink-2;
+  }
+
+  &__optional {
+    font-weight: 400;
+    color: $faint;
+    margin-left: 4px;
+  }
+
+  &__error {
+    font-size: 13px;
+    color: $red;
+  }
+
+  &.has-error .input {
+    border-color: $red;
+  }
+}
+
+// Счётчик символов рядом с подписью поля.
+.field__counter {
+  margin-left: auto;
+  float: right;
+  color: $faint;
+  font-size: 12px;
+  font-weight: 600;
+
+  &.is-near {
+    color: $red;
+  }
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 12px;
+  border: 1px solid $line-2;
+  border-radius: $radius-sm;
+  background: $surface;
+  transition: border-color 0.15s;
+
+  &:hover:not(:disabled) {
+    border-color: $muted;
+  }
+
+  &:focus {
+    outline: none;
+    border-color: $accent-line;
+    box-shadow: 0 0 0 3px var(--focus-glow);
+  }
+
+  &:disabled {
+    background: $bg;
+    color: $faint;
+  }
+
+  &::placeholder {
+    color: $faint;
+  }
+}
+
+.select {
+  appearance: none;
+  padding-right: 34px;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+}
+
+.select--building {
+  min-width: 150px;
+}
+
+.select--floor {
+  min-width: 130px;
+}
+
+.select--sm {
+  min-height: 34px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.input--narrow {
+  width: 110px;
+}
+
+.input--date {
+  width: auto;
+  min-height: 34px;
+  padding: 4px 10px;
+}
+
+.form-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: $radius-sm;
+  background: $red-50;
+  color: $red;
+  font-size: 14px;
+
+  .icon {
+    margin-top: 2px;
+  }
+}
+
+.form-hint {
+  font-size: 13px;
+  color: $muted;
+
+  &--warn {
+    color: $warn;
+  }
+}
+
+// ---------- Чипы и переключатели ----------
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid $line-2;
+  border-radius: 999px;
+  background: $surface;
+  color: $ink-2;
+  font-size: 14px;
+  font-weight: 500;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+
+  &:hover {
+    border-color: $ink-2;
+  }
+
+  &.is-active {
+    background: $inverse-bg;
+    border-color: $inverse-bg;
+    color: $inverse-text;
+  }
+}
+
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px;
+  gap: 2px;
+  border-radius: $radius-sm;
+  background: $track;
+  max-width: 100%;
+  overflow-x: auto;
+
+  &__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    min-width: 38px;
+    justify-content: center;
+    padding: 0 12px;
+    border-radius: 8px;
+    color: $ink-2;
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
+
+    &:hover:not(.is-active) {
+      color: $ink;
+      background: color-mix(in srgb, #{$surface-raised} 60%, transparent);
+    }
+
+    &.is-active {
+      background: $surface-raised;
+      color: $accent-text;
+      box-shadow: $shadow-sm;
+    }
+  }
+
+  &--sm &__item {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+}
+
+// ---------- Аватары и статусы ----------
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px 10px 10px 2px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+
+  &--student {
+    background: $lime;
+    color: $on-lime;
+  }
+
+  &--admin {
+    background: $lilac;
+    color: $on-lime;
+  }
+
+  &--sm {
+    width: 30px;
+    height: 30px;
+    font-size: 12px;
+  }
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  &--active {
+    background: $lime-50;
+    color: $lime-text;
+  }
+
+  &--cancelled {
+    background: $surface-3;
+    color: $muted;
+  }
+
+  &--past {
+    background: $violet-50;
+    color: $accent-strong-text;
+  }
+}
+
+// ---------- Оборудование и полоса дня ----------
+.equipment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: $ink-2;
+  font-size: 13px;
+
+  &__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  &--compact {
+    gap: 6px;
+  }
+
+  &__none {
+    color: $faint;
+    font-size: 13px;
+  }
+}
+
+.day-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--slot-free);
+  overflow: hidden;
+
+  &__busy {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    @include hatch;
+  }
+
+  &__highlight {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    box-shadow: inset 0 0 0 2px $violet;
+    border-radius: 2px;
+  }
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  vertical-align: -2px;
+
+  &--free {
+    background: $surface-2;
+    box-shadow: inset 0 0 0 1px $line-2;
+  }
+
+  &--partial {
+    background: linear-gradient(90deg, $lime 50%, $busy-bg 50%);
+  }
+
+  &--busy,
+  &--busy-hatch {
+    @include hatch;
+  }
+
+  &--off {
+    background: $surface;
+    border: 1px dashed $line-2;
+  }
+
+  &--selected {
+    background: $violet;
+  }
+}
+
+// ---------- Тосты ----------
+.toast-stack {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, calc(100vw - 32px));
+
+  @include below(640px) {
+    right: 16px;
+    bottom: 16px;
+  }
+}
+
+.toast {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 14px 14px 14px 16px;
+  border-radius: $radius;
+  background: var(--toast-bg);
+  color: $on-accent;
+  box-shadow: $shadow-lg;
+  animation: toastIn 0.3s $ease both;
+
+  &__icon {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  &--success &__icon {
+    background: $lime;
+    color: $on-lime;
+  }
+
+  &--error &__icon {
+    background: $red;
+  }
+
+  &--error {
+    animation:
+      toastIn 0.3s $ease both,
+      shake 0.45s 0.15s both;
+  }
+
+  &__title {
+    font-weight: 700;
+  }
+
+  &__message {
+    margin-top: 2px;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.78);
+  }
+
+  &__code {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  &__close {
+    color: rgba(255, 255, 255, 0.5);
+
+    &:hover {
+      color: $on-accent;
+    }
+  }
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+// ---------- Модалка ----------
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--overlay);
+  animation: overlayIn 0.2s ease both;
+
+  &__dialog {
+    width: 100%;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+    border-radius: $leaf;
+    background: $surface;
+    box-shadow: $shadow-lg;
+    animation: dialogIn 0.3s $ease both;
+
+    &--sm {
+      max-width: 440px;
+    }
+
+    &--md {
+      max-width: 560px;
+    }
+
+    &--bare {
+      background: transparent;
+      box-shadow: none;
+      overflow: visible;
+      max-width: 520px;
+    }
+
+    &:focus {
+      outline: none;
+    }
+  }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 20px 20px 0 24px;
+  }
+
+  &__title {
+    font-size: 20px;
+    font-weight: 700;
+  }
+
+  &__body {
+    padding: 16px 24px 8px;
+  }
+
+  &__footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 16px 24px 24px;
+  }
+}
+
+.confirm-dialog__text {
+  color: $ink-2;
+
+  a {
+    color: $accent-text;
+    font-weight: 600;
+  }
+}
+
+@keyframes overlayIn {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+  }
+}
+
+// ---------- Загрузка и пустые состояния ----------
+.loader {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: $muted;
+
+  &__blocks {
+    display: inline-flex;
+    gap: 3px;
+
+    span {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      background: $violet;
+      animation: blink 0.9s infinite ease-in-out;
+
+      &:nth-child(2) {
+        background: $lime;
+        animation-delay: 0.15s;
+      }
+
+      &:nth-child(3) {
+        background: $lilac;
+        animation-delay: 0.3s;
+      }
+    }
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    transform: scale(0.7);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.skeleton-list {
+  display: grid;
+  gap: 10px;
+}
+
+.skeleton {
+  border-radius: $radius;
+  background: linear-gradient(90deg, $track 0%, $surface-2 50%, $track 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite linear;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 48px 24px;
+  border: 1px dashed $line-2;
+  border-radius: $leaf;
+  background: $surface;
+
+  &__mark {
+    display: none;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    margin-bottom: 14px;
+    border-radius: 4px 18px 4px 4px;
+    background: $violet-50;
+    color: $accent-text;
+  }
+
+  &__title {
+    font-size: 17px;
+    font-weight: 700;
+  }
+
+  &__text {
+    max-width: 420px;
+    margin-top: 6px;
+    color: $muted;
+  }
+
+  &__action {
+    margin-top: 18px;
+  }
+
+  &--compact {
+    padding: 24px 16px;
+  }
+}
+
+// ---------- Таблицы и панели инструментов ----------
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 20px;
+  padding: 16px;
+  margin-bottom: 16px;
+  border: 1px solid $line;
+  border-radius: $leaf;
+  background: $surface;
+
+  &__group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    // Ширина фиксированная, а не по самому длинному пункту: иначе селект прыгает, когда список
+    // пользователей сужается фильтрами. Длинное имя обрезаем многоточием.
+    .select {
+      width: 200px;
+      max-width: 100%;
+      min-height: 34px;
+      padding-top: 4px;
+      padding-bottom: 4px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+  }
+
+  &__inline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  &__label {
+    font-size: 12px;
+    font-weight: 600;
+    color: $muted;
+  }
+
+  &__reset {
+    align-self: center;
+    margin-top: 18px;
+  }
+
+  &__summary {
+    margin-left: auto;
+    color: $muted;
+    font-size: 14px;
+    align-self: center;
+  }
+}
+
+.data-table-wrap {
+  border: 1px solid $line;
+  border-radius: $leaf;
+  background: $surface;
+  overflow-x: auto;
+  animation: fadeUp 0.3s $ease both;
+
+  &.is-cards {
+    border: 0;
+    background: transparent;
+    overflow: visible;
+  }
+}
+
+.data-table {
+  width: 100%;
+  font-size: 14px;
+
+  th {
+    padding: 12px 14px;
+    border-bottom: 1px solid $line;
+    color: $muted;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 12px 14px;
+    border-bottom: 1px solid $line;
+    vertical-align: middle;
+  }
+
+  tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  tbody tr {
+    transition: background-color 0.15s;
+
+    &:hover {
+      background: $row-hover;
+    }
+
+    &.is-muted td:not(.data-table__actions) {
+      color: $faint;
+    }
+  }
+
+  &__id {
+    color: $faint;
+    width: 48px;
+  }
+
+  &__strong {
+    font-weight: 700;
+  }
+
+  &__mono {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  &__sub {
+    display: block;
+    color: $faint;
+    font-size: 12px;
+  }
+
+  &__comment {
+    max-width: 260px;
+    color: $ink-2;
+    overflow-wrap: anywhere;
+  }
+
+  &__actions {
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  // Таблица не сжимается: на узком экране её двигают по горизонтали.
+  min-width: 720px;
+
+  // Режим «карточки»: строки превращаются в карточки.
+  .is-cards & {
+    min-width: 0;
+
+    thead {
+      display: none;
+    }
+
+    // Сколько влезает карточек от 280px: на широком мониторе 5–7 в ряд, на телефоне одна.
+    tbody {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+      gap: 10px;
+    }
+
+    tr {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 12px;
+      padding: 14px;
+      border: 1px solid $line;
+      border-radius: $radius;
+      background: $surface;
+    }
+
+    td {
+      padding: 0;
+      border: 0;
+
+      &[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        color: $faint;
+        font-size: 11px;
+      }
+    }
+
+    &__actions {
+      grid-column: 1 / -1;
+      text-align: left;
+    }
+
+    &__comment {
+      grid-column: 1 / -1;
+    }
+  }
+}
+
+// ---------- Переключатель темы ----------
+.theme-switcher {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+
+  &__item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 4px;
+    border: 1px solid $line;
+    border-radius: $radius-sm;
+    color: $ink-2;
+    font-size: 12px;
+    font-weight: 600;
+    transition:
+      border-color 0.15s,
+      background-color 0.15s,
+      color 0.15s;
+
+    &:hover:not(.is-active) {
+      border-color: $line-2;
+      background: $row-hover;
+    }
+
+    &.is-active {
+      border-color: $accent-line;
+      background: $violet-50;
+      color: $accent-text;
+    }
+  }
+
+  &--compact {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: $radius-sm;
+    background: $track;
+  }
+
+  &--compact &__item {
+    width: 32px;
+    height: 30px;
+    padding: 0;
+    justify-content: center;
+    border: 0;
+    border-radius: 7px;
+
+    &.is-active {
+      background: $surface-raised;
+      color: $accent-text;
+      box-shadow: $shadow-sm;
+    }
+  }
+}
+
+// Карточка брони: сверху аудитория и статус, дальше когда и кто, внизу комментарий и действие.
+.is-cards .data-table--bookings {
+  tr {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'room status'
+      'date time'
+      'who who'
+      'comment comment'
+      'id actions';
+    align-items: start;
+    gap: 12px 16px;
+  }
+
+  td:nth-child(1) { grid-area: id; align-self: center; }
+  td:nth-child(2) { grid-area: room; font-size: 18px; }
+  td:nth-child(3) { grid-area: date; }
+  td:nth-child(4) { grid-area: time; text-align: right; }
+  td:nth-child(5) { grid-area: who; }
+  td:nth-child(6) { grid-area: comment; }
+  td:nth-child(7) { grid-area: status; align-self: center; }
+
+  // Подписи «Аудитория» и «Статус» в шапке карточки лишние — и так понятно.
+  td:nth-child(2)::before,
+  td:nth-child(7)::before {
+    display: none;
+  }
+
+  td:nth-child(1)::before {
+    display: inline;
+    margin-right: 4px;
+  }
+
+  td.data-table__actions {
+    grid-column: auto;
+  }
+
+  td:nth-child(5),
+  td.data-table__comment {
+    grid-column: 1 / -1;
+  }
+
+  td.data-table__comment {
+    max-width: none;
+    padding-top: 12px;
+    border-top: 1px dashed $line;
+  }
+
+  td:nth-child(8) {
+    grid-area: actions;
+    align-self: center;
+    text-align: right;
+  }
+}
