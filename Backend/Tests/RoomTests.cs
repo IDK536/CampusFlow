@@ -797,7 +797,7 @@ public sealed class RoomTests : IAsyncLifetime
         }
         client.DefaultRequestHeaders.Add("role", "admin");
 
-        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01");
+        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01&building=invalid");
         using var cancellation = await client.DeleteAsync("/api/admin/bookings/text");
         using var creation = await client.PostAsJsonAsync("/api/admin/rooms", new { role = "admin", floor = "bad" });
         using var update = await client.PutAsJsonAsync("/api/admin/rooms/text", new { role = "admin" });
@@ -806,7 +806,8 @@ public sealed class RoomTests : IAsyncLifetime
         using var malformed = await client.PostAsync("/api/admin/rooms", new StringContent("{", Encoding.UTF8, "application/json"));
         using var wrongMethod = await client.GetAsync("/api/admin/rooms");
         using var unknown = await client.GetAsync("/api/admin/missing");
-        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown };
+        using var users = await client.GetAsync("/api/admin/users");
+        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown, users };
         var bodies = await Task.WhenAll(responses.Select(response => response.Content.ReadAsStringAsync()));
 
         Assert.All(responses, response => Assert.Equal(HttpStatusCode.NotFound, response.StatusCode));

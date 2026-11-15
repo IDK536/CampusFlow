@@ -119,6 +119,7 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
         var bookings = await (from booking in query
                               join room in db.Rooms on booking.RoomId equals room.Id
                               join user in db.Users on booking.UserId equals user.Id
+                              where filters.Building == null || room.Building == filters.Building
                               orderby booking.Date, booking.StartTime, booking.Id
                               select new
                               {

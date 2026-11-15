@@ -62,6 +62,10 @@ public sealed record BookingCancellationResponse(int Id, string Status);
 
 public sealed class AdminBookingsQuery : IValidatableObject
 {
+    [FromQuery(Name = "building")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Building { get; init; }
+
     [FromQuery(Name = "date")]
     [DisplayFormat(ConvertEmptyStringToNull = false)]
     public string? Date { get; init; }
@@ -88,6 +92,8 @@ public sealed class AdminBookingsQuery : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (Building is not null && Building is not ("A" or "B" or "C" or "D"))
+            yield return new ValidationResult("Корпус должен быть A, B, C или D", [nameof(Building)]);
         foreach (var field in new[] { (Name: nameof(Date), Value: Date), (Name: nameof(DateFrom), Value: DateFrom), (Name: nameof(DateTo), Value: DateTo) })
         {
             if (field.Value is not null && !DateOnly.TryParseExact(field.Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))

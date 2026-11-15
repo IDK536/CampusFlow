@@ -526,6 +526,7 @@ public sealed class BookingTests : IAsyncLifetime
         var cancellation = schema.RootElement.GetProperty("paths").GetProperty("/api/bookings/{id}").GetProperty("delete");
         var adminList = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/bookings").GetProperty("get");
         var adminCancellation = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/bookings/{id}").GetProperty("delete");
+        var adminUsers = schema.RootElement.GetProperty("paths").GetProperty("/api/admin/users").GetProperty("get");
 
         Assert.True(creation.GetProperty("responses").TryGetProperty("201", out _));
         Assert.True(creation.GetProperty("responses").TryGetProperty("409", out _));
@@ -534,13 +535,18 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(cancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(cancellation.GetProperty("responses").TryGetProperty("200", out _));
         Assert.True(cancellation.GetProperty("responses").TryGetProperty("409", out _));
+        Assert.True(adminUsers.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.True(adminUsers.GetProperty("responses").TryGetProperty("200", out _));
+        Assert.True(adminUsers.GetProperty("responses").TryGetProperty("404", out _));
+        Assert.False(adminUsers.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.False(adminUsers.GetProperty("responses").TryGetProperty("403", out _));
         Assert.True(adminList.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(adminCancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(adminCancellation.GetProperty("responses").TryGetProperty("409", out _));
         Assert.True(adminList.GetProperty("responses").TryGetProperty("404", out _));
         Assert.False(adminList.GetProperty("responses").TryGetProperty("401", out _));
         Assert.False(adminCancellation.GetProperty("responses").TryGetProperty("403", out _));
-        Assert.Equal(new[] { "date", "dateFrom", "dateTo", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
+        Assert.Equal(new[] { "building", "date", "dateFrom", "dateTo", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
             .EnumerateArray().Select(parameter => parameter.GetProperty("name").GetString()).Order().ToArray());
         Assert.All(adminList.GetProperty("parameters").EnumerateArray()
             .Where(parameter => parameter.GetProperty("name").GetString() is "date" or "dateFrom" or "dateTo"),
@@ -712,6 +718,12 @@ public sealed class BookingTests : IAsyncLifetime
 
     [Theory]
     [InlineData("", "0,1,2,3")]
+    [InlineData("building=A", "0,1,2,3")]
+    [InlineData("building=B&roomId={room}", "")]
+    [InlineData("building=C&roomId={room}", "")]
+    [InlineData("building=D&roomId={room}", "")]
+    [InlineData("building=A&dateFrom={date}&dateTo={date}&roomId={room}&userId={owner}&status=active", "2")]
+    [InlineData("building=B&dateFrom={date}&dateTo={date}&roomId={room}&userId={owner}&status=active", "")]
     [InlineData("date=2000-01-01", "0")]
     [InlineData("date={date}", "1,2,3")]
     [InlineData("roomId={room}", "0,1,2,3")]
@@ -769,6 +781,11 @@ public sealed class BookingTests : IAsyncLifetime
 
     [Theory]
     [InlineData("date=")]
+    [InlineData("building=")]
+    [InlineData("building=a")]
+    [InlineData("building=E")]
+    [InlineData("building=A,B")]
+    [InlineData("building=1")]
     [InlineData("date=2035-02-29")]
     [InlineData("date=2035-1-01")]
     [InlineData("date=2035-01-01T00:00:00")]
@@ -877,6 +894,56 @@ public sealed class BookingTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.NotFound, list.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, cancellation.StatusCode);
+    }
+
+    [Fact]
+    public async Task AdminUsersIncludeStudentsWithoutBookingsAndOnlyPublicFields()
+    {
+        var second = await AddUserAsync();
+        var third = await AddUserAsync();
+        var studentIds = new[] { user.Id, second.Id, third.Id };
+        await using var db = CreateDbContext();
+        await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.DisplayName, "B_" + suffix));
+        await db.Users.Where(item => item.Id == second.Id || item.Id == third.Id)
+            .ExecuteUpdateAsync(update => update.SetProperty(item => item.DisplayName, "A_" + suffix));
+        using var creation = await client.PostAsJsonAsync("/api/bookings", Request());
+        creation.EnsureSuccessStatusCode();
+        var admin = await LoginAsAdminAsync();
+
+        using var response = await client.GetAsync("/api/admin/users");
+        var result = (await response.Content.ReadFromJsonAsync<UserResponse[]>())!;
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var own = result!.Where(item => studentIds.Contains(item.Id)).ToArray();
+        var studentsWithoutBookings = await db.Bookings.CountAsync(item => item.UserId == second.Id || item.UserId == third.Id);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(new[] { second.Id, third.Id, user.Id }, own.Select(item => item.Id));
+        Assert.Equal(second.Login, own[0].Login);
+        Assert.Equal("A_" + suffix, own[0].DisplayName);
+        Assert.All(result, item => Assert.Equal("student", item.Role));
+        Assert.DoesNotContain(result, item => item.Id == admin.Id);
+        Assert.Equal(0, studentsWithoutBookings);
+        Assert.All(body.RootElement.EnumerateArray(), item => Assert.Equal(new[] { "displayName", "id", "login", "role" },
+            item.EnumerateObject().Select(field => field.Name).Order().ToArray()));
+    }
+
+    [Fact]
+    public async Task AdminBuildingFilterUsesCurrentRoomBuilding()
+    {
+        using var creation = await client.PostAsJsonAsync("/api/bookings", Request());
+        var booking = (await creation.Content.ReadFromJsonAsync<BookingResponse>())!;
+        await using var db = CreateDbContext();
+        await db.Rooms.Where(item => item.Id == room.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Building, "B"));
+        await LoginAsAdminAsync();
+        commands.BookingReads = 0;
+
+        var oldBuilding = await client.GetFromJsonAsync<BookingResponse[]>($"/api/admin/bookings?roomId={room.Id}&building=A");
+        var currentBuilding = await client.GetFromJsonAsync<BookingResponse[]>($"/api/admin/bookings?roomId={room.Id}&building=B");
+        var reads = commands.BookingReads;
+
+        Assert.Empty(oldBuilding!);
+        Assert.Equal(booking.Id, Assert.Single(currentBuilding!).Id);
+        Assert.Equal(2, reads);
     }
 
     private async Task<User> LoginAsAdminAsync()

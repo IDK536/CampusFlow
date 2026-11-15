@@ -36,6 +36,7 @@ builder.Services.AddOptions<JwtOptions>().BindConfiguration("Jwt")
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<RoomService>();
+builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<BookingService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
