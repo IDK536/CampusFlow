@@ -8,6 +8,8 @@ using Npgsql;
 
 namespace CampusFlow.Api.Services;
 
+public sealed record BookingInsertion(int Id, DateTimeOffset CreatedAt);
+
 public sealed record BookingListResult(BookingResponse[] Bookings, int TotalCount, int ActiveCount);
 
 public sealed record BookingCreationResult(BookingResponse? Booking, string? ErrorCode = null);
@@ -18,9 +20,13 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
     {
         if (!await db.Users.AnyAsync(user => user.Id == userId, cancellationToken))
             return "UNAUTHORIZED";
+        var cancelledAt = clock.GetUtcNow();
+        var cancelledBy = asAdmin ? "admin" : "owner";
         var updated = await db.Bookings
             .Where(booking => booking.Id == bookingId && (asAdmin || booking.UserId == userId) && booking.Status == "active")
-            .ExecuteUpdateAsync(update => update.SetProperty(booking => booking.Status, "cancelled"), cancellationToken);
+            .ExecuteUpdateAsync(update => update.SetProperty(booking => booking.Status, "cancelled")
+                .SetProperty(booking => booking.CancelledAt, cancelledAt)
+                .SetProperty(booking => booking.CancelledBy, cancelledBy), cancellationToken);
         if (updated == 1)
             return null;
         var booking = await db.Bookings.AsNoTracking().Where(booking => booking.Id == bookingId)
@@ -55,15 +61,16 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
         };
         try
         {
-            var ids = await db.Database.SqlQuery<int>($"""
+            var inserted = await db.Database.SqlQuery<BookingInsertion>($"""
                 INSERT INTO "Bookings" ("RoomId", "UserId", "Date", "StartTime", "EndTime", "Status", "Comment")
                 VALUES ({booking.RoomId}, {booking.UserId}, {booking.Date}, {booking.StartTime}, {booking.EndTime}, {booking.Status}, {booking.Comment})
                 ON CONFLICT ON CONSTRAINT "Bookings_NoOverlap" DO NOTHING
-                RETURNING "Id" AS "Value"
+                RETURNING "Id", "CreatedAt"
                 """).ToListAsync(cancellationToken);
-            if (ids.Count == 0)
+            if (inserted.Count == 0)
                 return new(null, "BOOKING_CONFLICT");
-            booking.Id = ids.Single();
+            booking.Id = inserted.Single().Id;
+            booking.CreatedAt = inserted.Single().CreatedAt;
         }
         catch (PostgresException exception) when (exception is
             { SqlState: PostgresErrorCodes.ForeignKeyViolation, ConstraintName: "FK_Bookings_Rooms_RoomId" })
@@ -76,7 +83,7 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
             return new(null, "UNAUTHORIZED");
         }
         return new(new BookingResponse(booking.Id, booking.RoomId, room.Name, userId, user.DisplayName,
-            request.Date!, request.StartTime!, request.EndTime!, booking.Status, booking.Comment));
+            request.Date!, request.StartTime!, request.EndTime!, booking.Status, booking.Comment, booking.CreatedAt));
     }
 
     public async Task<BookingResponse[]?> GetMineAsync(int userId, MyBookingsQuery filters, CancellationToken cancellationToken)
@@ -139,7 +146,7 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
                               {
                                   booking.Id, booking.RoomId, RoomName = room.Name, booking.UserId,
                                   UserDisplayName = user.DisplayName, booking.Date, booking.StartTime,
-                                  booking.EndTime, booking.Status, booking.Comment
+                                  booking.EndTime, booking.Status, booking.Comment, booking.CreatedAt, booking.CancelledAt, booking.CancelledBy
                               };
         var counts = includeTotalCount
             ? await joined.GroupBy(booking => 1).Select(group => new
@@ -160,7 +167,7 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
         var response = bookings.Select(booking => new BookingResponse(booking.Id, booking.RoomId, booking.RoomName,
             booking.UserId, booking.UserDisplayName, booking.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             booking.StartTime.ToString("HH:mm", CultureInfo.InvariantCulture), booking.EndTime.ToString("HH:mm", CultureInfo.InvariantCulture),
-            booking.Status, booking.Comment)).ToArray();
+            booking.Status, booking.Comment, booking.CreatedAt, booking.CancelledAt, booking.CancelledBy)).ToArray();
         return new BookingListResult(response, includeTotalCount ? counts?.TotalCount ?? 0 : response.Length, counts?.ActiveCount ?? 0);
     }
 }

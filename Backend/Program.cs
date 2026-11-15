@@ -98,6 +98,7 @@ builder.Services.AddSwaggerGen(options =>
     options.OperationFilter<AuthorizationOperationFilter>();
     options.OperationFilter<ServerTimeOperationFilter>();
     options.SchemaFilter<BookingRequestSchemaFilter>();
+    options.SchemaFilter<BookingHistorySchemaFilter>();
 });
 builder.Services.AddDbContext<CampusFlowDbContext>(options => options.UseNpgsql(
     builder.Configuration.GetConnectionString("CampusFlow")

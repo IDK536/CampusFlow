@@ -62,7 +62,8 @@ public sealed class MyBookingsQuery : IValidatableObject
 }
 
 public sealed record BookingResponse(int Id, int RoomId, string RoomName, int UserId, string UserDisplayName,
-    string Date, string StartTime, string EndTime, string Status, string? Comment);
+    string Date, string StartTime, string EndTime, string Status, string? Comment,
+    DateTimeOffset? CreatedAt = null, DateTimeOffset? CancelledAt = null, string? CancelledBy = null);
 
 public sealed record BookingCancellationResponse(int Id, string Status);
 

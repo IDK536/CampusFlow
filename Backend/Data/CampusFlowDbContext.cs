@@ -56,6 +56,7 @@ public sealed class CampusFlowDbContext(DbContextOptions<CampusFlowDbContext> op
         var bookings = modelBuilder.Entity<Booking>();
         bookings.ToTable("Bookings", table =>
         {
+            table.HasCheckConstraint("CK_Bookings_CancelledBy", "\"CancelledBy\" IS NULL OR \"CancelledBy\" IN ('owner', 'admin')");
             table.HasCheckConstraint("CK_Bookings_Status", "\"Status\" IN ('active', 'cancelled')");
             table.HasCheckConstraint("CK_Bookings_Interval", "\"StartTime\" < \"EndTime\" AND \"StartTime\" >= TIME '09:00' AND \"EndTime\" <= TIME '18:00'");
             table.HasCheckConstraint("CK_Bookings_Grid", "EXTRACT(MINUTE FROM \"StartTime\") IN (0, 30) AND EXTRACT(SECOND FROM \"StartTime\") = 0 AND EXTRACT(MINUTE FROM \"EndTime\") IN (0, 30) AND EXTRACT(SECOND FROM \"EndTime\") = 0");
@@ -65,6 +66,8 @@ public sealed class CampusFlowDbContext(DbContextOptions<CampusFlowDbContext> op
         bookings.Property(x => x.StartTime).HasColumnType("time without time zone");
         bookings.Property(x => x.EndTime).HasColumnType("time without time zone");
         bookings.Property(x => x.Status).IsRequired();
+        bookings.Property(x => x.CreatedAt).HasDefaultValueSql("clock_timestamp()");
+        bookings.Property(x => x.CancelledBy).HasMaxLength(5);
 
         bookings.HasOne<Room>().WithMany().HasForeignKey(x => x.RoomId).OnDelete(DeleteBehavior.Restrict);
         bookings.HasOne<User>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);

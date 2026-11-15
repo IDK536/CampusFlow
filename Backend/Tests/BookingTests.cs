@@ -109,9 +109,13 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal("15:30", created.EndTime);
         Assert.Equal("active", created.Status);
         Assert.Equal("Test booking", created.Comment);
+        Assert.NotNull(created.CreatedAt);
+        Assert.Equal(TimeSpan.Zero, created.CreatedAt.Value.Offset);
+        Assert.Null(created.CancelledAt);
+        Assert.Null(created.CancelledBy);
         Assert.Contains(mine!, booking => booking == created);
         Assert.Equal([new FreeSlotResponse("09:00", "14:00"), new FreeSlotResponse("15:30", "18:00")], slots!.FreeSlots);
-        Assert.Equal(new[] { "comment", "date", "endTime", "id", "roomId", "roomName", "startTime", "status", "userDisplayName", "userId" },
+        Assert.Equal(new[] { "cancelledAt", "cancelledBy", "comment", "createdAt", "date", "endTime", "id", "roomId", "roomName", "startTime", "status", "userDisplayName", "userId" },
             body.RootElement.EnumerateObject().Select(property => property.Name).Order().ToArray());
     }
 
@@ -124,6 +128,9 @@ public sealed class BookingTests : IAsyncLifetime
         payload["userId"] = other.Id;
         payload["status"] = "cancelled";
         payload["unknown"] = "ignored";
+        payload["createdAt"] = "2000-01-01T00:00:00Z";
+        payload["cancelledAt"] = "2000-01-02T00:00:00Z";
+        payload["cancelledBy"] = "admin";
 
         using var response = await client.PostAsJsonAsync("/api/bookings", payload);
         var result = await response.Content.ReadFromJsonAsync<BookingResponse>();
@@ -136,6 +143,11 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal("active", result.Status);
         Assert.Equal(user.Id, saved.UserId);
         Assert.Equal("active", saved.Status);
+        Assert.NotNull(saved.CreatedAt);
+        Assert.NotEqual(new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero), saved.CreatedAt);
+        Assert.Null(saved.CancelledAt);
+        Assert.Null(saved.CancelledBy);
+        Assert.Equal(saved.CreatedAt, result.CreatedAt);
     }
 
     [Theory]
@@ -641,8 +653,121 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.All(adminList.GetProperty("parameters").EnumerateArray()
             .Where(parameter => parameter.GetProperty("name").GetString() is "date" or "dateFrom" or "dateTo"),
             parameter => Assert.Equal("date", parameter.GetProperty("schema").GetProperty("format").GetString()));
+        var bookingSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("BookingResponse");
+        Assert.Contains("owner/admin", bookingSchema.GetProperty("description").GetString());
+        Assert.Equal("date-time", bookingSchema.GetProperty("properties").GetProperty("createdAt").GetProperty("format").GetString());
+        Assert.Equal("date-time", bookingSchema.GetProperty("properties").GetProperty("cancelledAt").GetProperty("format").GetString());
         var requestSchema = schema.RootElement.GetProperty("components").GetProperty("schemas").GetProperty("CreateBookingRequest");
         Assert.True(!requestSchema.TryGetProperty("additionalProperties", out var additional) || additional.ValueKind == JsonValueKind.True);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FirstCancellationRecordsActorAndTimeAndCannotBeOverwritten(bool adminFirst)
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        var ownerToken = client.DefaultRequestHeaders.Authorization;
+        await LoginAsAdminAsync();
+        var adminToken = client.DefaultRequestHeaders.Authorization;
+        var firstPath = adminFirst ? $"/api/admin/bookings/{created.Id}" : $"/api/bookings/{created.Id}";
+        var secondPath = adminFirst ? $"/api/bookings/{created.Id}" : $"/api/admin/bookings/{created.Id}";
+        using var firstRequest = new HttpRequestMessage(HttpMethod.Delete, firstPath);
+        firstRequest.Headers.Authorization = adminFirst ? adminToken : ownerToken;
+        using var secondRequest = new HttpRequestMessage(HttpMethod.Delete, secondPath);
+        secondRequest.Headers.Authorization = adminFirst ? ownerToken : adminToken;
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var expectedTime = clock.DatabaseUtcNow;
+
+        using var first = await client.SendAsync(firstRequest);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        using var second = await client.SendAsync(secondRequest);
+        var error = await second.Content.ReadFromJsonAsync<ApiError>();
+        var history = await client.GetFromJsonAsync<BookingResponse[]>($"/api/admin/bookings?roomId={room.Id}");
+        await using var db = CreateDbContext();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == created.Id);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Equal("ALREADY_CANCELLED", error!.Code);
+        Assert.Equal(created.CreatedAt, saved.CreatedAt);
+        Assert.Equal(expectedTime, saved.CancelledAt);
+        Assert.Equal(TimeSpan.Zero, saved.CancelledAt!.Value.Offset);
+        Assert.Equal(adminFirst ? "admin" : "owner", saved.CancelledBy);
+        Assert.Equal(created with { Status = "cancelled", CancelledAt = expectedTime, CancelledBy = adminFirst ? "admin" : "owner" }, Assert.Single(history!));
+    }
+
+    [Fact]
+    public async Task ConcurrentOwnerAndAdminCancellationKeepsWinningActor()
+    {
+        using var createdResponse = await client.PostAsJsonAsync("/api/bookings", Request());
+        var created = (await createdResponse.Content.ReadFromJsonAsync<BookingResponse>())!;
+        var ownerToken = client.DefaultRequestHeaders.Authorization;
+        await LoginAsAdminAsync();
+        using var ownerRequest = new HttpRequestMessage(HttpMethod.Delete, $"/api/bookings/{created.Id}");
+        ownerRequest.Headers.Authorization = ownerToken;
+        using var adminRequest = new HttpRequestMessage(HttpMethod.Delete, $"/api/admin/bookings/{created.Id}");
+        var bothReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+        commands.BeforeCancellation = async cancellationToken =>
+        {
+            if (Interlocked.Increment(ref arrivals) == 2)
+                bothReady.TrySetResult();
+            await bothReady.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        };
+
+        var responses = await Task.WhenAll(client.SendAsync(ownerRequest), client.SendAsync(adminRequest));
+        var statuses = responses.Select(response => response.StatusCode).ToArray();
+        foreach (var response in responses)
+            response.Dispose();
+        await using var db = CreateDbContext();
+        var saved = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == created.Id);
+
+        Assert.Single(statuses, status => status == HttpStatusCode.OK);
+        Assert.Single(statuses, status => status == HttpStatusCode.Conflict);
+        Assert.Equal(created.CreatedAt, saved.CreatedAt);
+        Assert.Equal(clock.DatabaseUtcNow, saved.CancelledAt);
+        Assert.Equal(statuses[0] == HttpStatusCode.OK ? "owner" : "admin", saved.CancelledBy);
+    }
+
+    [Fact]
+    public async Task LegacyBookingsReturnUnknownHistoryAsNullInBothLists()
+    {
+        var rows = new[]
+        {
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(10, 0), EndTime = new(11, 0), Status = "cancelled" }
+        };
+        await using var db = CreateDbContext();
+        db.Bookings.AddRange(rows);
+        await db.SaveChangesAsync();
+        await db.Bookings.Where(item => item.RoomId == room.Id)
+            .ExecuteUpdateAsync(update => update.SetProperty(item => item.CreatedAt, (DateTimeOffset?)null));
+        var ownerToken = client.DefaultRequestHeaders.Authorization;
+        await LoginAsAdminAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/bookings/my");
+        request.Headers.Authorization = ownerToken;
+
+        using var mine = await client.SendAsync(request);
+        using var ownBody = JsonDocument.Parse(await mine.Content.ReadAsStringAsync());
+        var all = await client.GetFromJsonAsync<BookingResponse[]>($"/api/admin/bookings?roomId={room.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, mine.StatusCode);
+        Assert.Equal(2, ownBody.RootElement.GetArrayLength());
+        Assert.All(ownBody.RootElement.EnumerateArray(), item =>
+        {
+            Assert.Equal(JsonValueKind.Null, item.GetProperty("createdAt").ValueKind);
+            Assert.Equal(JsonValueKind.Null, item.GetProperty("cancelledAt").ValueKind);
+            Assert.Equal(JsonValueKind.Null, item.GetProperty("cancelledBy").ValueKind);
+        });
+        Assert.Equal(2, all!.Length);
+        Assert.All(all, item =>
+        {
+            Assert.Null(item.CreatedAt);
+            Assert.Null(item.CancelledAt);
+            Assert.Null(item.CancelledBy);
+        });
     }
 
     [Fact]
@@ -753,6 +878,9 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Single(statuses, status => status == HttpStatusCode.Conflict);
         Assert.Equal(new[] { "ALREADY_CANCELLED" }, errors);
         Assert.Equal("cancelled", saved.Status);
+        Assert.Equal(created.CreatedAt, saved.CreatedAt);
+        Assert.Equal(clock.DatabaseUtcNow, saved.CancelledAt);
+        Assert.Equal(asAdmin ? "admin" : "owner", saved.CancelledBy);
     }
 
     [Theory]
@@ -969,7 +1097,7 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.NotEqual(user.Id, admin.Id);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(new BookingCancellationResponse(created.Id, "cancelled"), body);
-        Assert.Equal(created with { Status = "cancelled" }, Assert.Single(history!));
+        Assert.Equal(created with { Status = "cancelled", CancelledAt = clock.DatabaseUtcNow, CancelledBy = "admin" }, Assert.Single(history!));
         Assert.Equal([new FreeSlotResponse("09:00", "18:00")], free!.FreeSlots);
         Assert.Equal(HttpStatusCode.Conflict, repeated.StatusCode);
         Assert.Equal("ALREADY_CANCELLED", error!.Code);
@@ -1425,6 +1553,8 @@ public sealed class BookingTests : IAsyncLifetime
     {
         private DateTimeOffset now = DateTimeOffset.UtcNow;
         public override DateTimeOffset GetUtcNow() => now;
+        public DateTimeOffset DatabaseUtcNow => new(now.Ticks - now.Ticks % TimeSpan.TicksPerMicrosecond, TimeSpan.Zero);
+        public void Advance(TimeSpan duration) => now = now.Add(duration);
         public void SetLocal(DateTime local) => now = new DateTimeOffset(local).ToUniversalTime();
     }
 

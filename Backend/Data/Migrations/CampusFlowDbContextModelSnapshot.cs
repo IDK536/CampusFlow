@@ -30,8 +30,20 @@ namespace CampusFlow.Api.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<int>("Id"));
 
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CancelledBy")
+                        .HasMaxLength(5)
+                        .HasColumnType("character varying(5)");
+
                     b.Property<string>("Comment")
                         .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("clock_timestamp()");
 
                     b.Property<DateOnly>("Date")
                         .HasColumnType("date");
@@ -60,6 +72,8 @@ namespace CampusFlow.Api.Data.Migrations
 
                     b.ToTable("Bookings", null, t =>
                         {
+                            t.HasCheckConstraint("CK_Bookings_CancelledBy", "\"CancelledBy\" IS NULL OR \"CancelledBy\" IN ('owner', 'admin')");
+
                             t.HasCheckConstraint("CK_Bookings_Grid", "EXTRACT(MINUTE FROM \"StartTime\") IN (0, 30) AND EXTRACT(SECOND FROM \"StartTime\") = 0 AND EXTRACT(MINUTE FROM \"EndTime\") IN (0, 30) AND EXTRACT(SECOND FROM \"EndTime\") = 0");
 
                             t.HasCheckConstraint("CK_Bookings_Interval", "\"StartTime\" < \"EndTime\" AND \"StartTime\" >= TIME '09:00' AND \"EndTime\" <= TIME '18:00'");

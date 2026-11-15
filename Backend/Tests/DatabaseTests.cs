@@ -1,3 +1,6 @@
+using CampusFlow.Api.Data.Migrations;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using CampusFlow.Api.Data;
 using CampusFlow.Api.Models;
 using Microsoft.AspNetCore.Identity;
@@ -57,6 +60,59 @@ public sealed class DatabaseTests : IAsyncLifetime
             .UseNpgsql(connection.ConnectionString)
             .Options;
         return new CampusFlowDbContext(options);
+    }
+
+    [Fact]
+    public async Task HistoryMigrationPreservesUnknownLegacyValuesAndDefaultsOnlyNewRows()
+    {
+        await using var db = CreateDbContext();
+        await db.Database.OpenConnectionAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await db.Database.ExecuteSqlRawAsync("CREATE TEMPORARY TABLE \"Bookings\" (\"Id\" integer GENERATED ALWAYS AS IDENTITY, \"Status\" text NOT NULL) ON COMMIT DROP");
+        await db.Database.ExecuteSqlRawAsync("INSERT INTO \"Bookings\" (\"Status\") VALUES ('active'), ('cancelled')");
+        var migration = new AddBookingHistory();
+        var commands = db.GetService<IMigrationsSqlGenerator>().Generate(migration.UpOperations, db.Model);
+
+        foreach (var command in commands)
+            await db.Database.ExecuteSqlRawAsync(command.CommandText);
+        var legacy = await db.Bookings.AsNoTracking().Select(item => new { item.CreatedAt, item.CancelledAt, item.CancelledBy }).ToArrayAsync();
+        var before = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync();
+        await db.Database.ExecuteSqlRawAsync("INSERT INTO \"Bookings\" (\"Status\") VALUES ('active')");
+        var created = await db.Bookings.AsNoTracking().OrderByDescending(item => item.Id).Select(item => item.CreatedAt).FirstAsync();
+        var after = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync();
+        await transaction.CommitAsync();
+
+        Assert.Equal(2, legacy.Length);
+        Assert.All(legacy, item =>
+        {
+            Assert.Null(item.CreatedAt);
+            Assert.Null(item.CancelledAt);
+            Assert.Null(item.CancelledBy);
+        });
+        Assert.NotNull(created);
+        Assert.InRange(created.Value, before, after);
+        Assert.Equal(TimeSpan.Zero, created.Value.Offset);
+    }
+
+    [Fact]
+    public async Task EfInsertionUsesDatabaseCreationTimeAndPersistsIt()
+    {
+        await using var db = CreateDbContext();
+        var data = await CreateTestDataAsync(db);
+        var booking = new Booking { RoomId = data.Room.Id, UserId = data.User.Id, Date = new(2031, 1, 1), StartTime = new(9, 0), EndTime = new(10, 0) };
+        db.Bookings.Add(booking);
+        var before = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync();
+
+        await db.SaveChangesAsync();
+        var persisted = await db.Bookings.AsNoTracking().SingleAsync(item => item.Id == booking.Id);
+        var after = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").SingleAsync();
+
+        Assert.NotNull(booking.CreatedAt);
+        Assert.InRange(booking.CreatedAt.Value, before, after);
+        Assert.Equal(TimeSpan.Zero, booking.CreatedAt.Value.Offset);
+        Assert.Equal(booking.CreatedAt, persisted.CreatedAt);
+        Assert.Null(persisted.CancelledAt);
+        Assert.Null(persisted.CancelledBy);
     }
 
     [Fact]
