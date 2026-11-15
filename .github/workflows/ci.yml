@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v5
       - id: projects
         run: |
-          if [[ -f CampusFlow.slnx ]]; then
+          if [[ -f Backend/CampusFlow.slnx ]]; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
           fi
           if [[ -f client/package.json ]]; then
@@ -47,13 +47,13 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet restore CampusFlow.slnx
-      - run: dotnet build CampusFlow.slnx --configuration Release --no-restore
+      - run: dotnet restore Backend/CampusFlow.slnx
+      - run: dotnet build Backend/CampusFlow.slnx --configuration Release --no-restore
       - name: Create application database
         run: docker exec "$POSTGRES_CONTAINER" createdb -U postgres campusflow
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-      - run: dotnet test CampusFlow.slnx --configuration Release --no-build -- xUnit.ParallelizeTestCollections=false
+      - run: dotnet test Backend/CampusFlow.slnx --configuration Release --no-build -- xUnit.ParallelizeTestCollections=false
         env:
           CAMPUSFLOW_TEST_CONNECTION: Host=127.0.0.1;Port=${{ job.services.postgres.ports['5432'] }};Database=campusflow_test;Username=postgres;Password=campusflow_ci
           ConnectionStrings__CampusFlow: Host=127.0.0.1;Port=${{ job.services.postgres.ports['5432'] }};Database=campusflow;Username=postgres;Password=campusflow_ci
