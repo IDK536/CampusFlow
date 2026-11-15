@@ -1,0 +1,85 @@
+@use '../variables' as *;
+
+html {
+  -webkit-text-size-adjust: 100%;
+  // Уже 320 px (самые узкие телефоны) вёрстка не сжимается — страница прокручивается.
+  min-width: 320px;
+}
+
+body {
+  min-height: 100vh;
+  background: $bg;
+  color: $ink;
+  font-family: $font;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum' 1;
+}
+
+body.is-modal-open {
+  overflow: hidden;
+}
+
+::selection {
+  background: $lime;
+  color: $on-lime;
+}
+
+:focus-visible {
+  @include focus-ring;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.icon {
+  flex-shrink: 0;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes shake {
+  10%,
+  90% {
+    transform: translateX(-1px);
+  }
+  20%,
+  80% {
+    transform: translateX(3px);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translateX(-5px);
+  }
+  40%,
+  60% {
+    transform: translateX(5px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

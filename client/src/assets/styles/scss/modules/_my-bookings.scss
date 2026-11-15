@@ -1,0 +1,188 @@
+@use '../variables' as *;
+
+.booking-list {
+  display: grid;
+  gap: 28px;
+
+  &__title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    font-size: 17px;
+    font-weight: 700;
+  }
+
+  &__count {
+    padding: 0 8px;
+    border-radius: 999px;
+    background: $track;
+    color: $muted;
+    font-size: 13px;
+  }
+
+  &__items {
+    display: grid;
+    gap: 10px;
+  }
+}
+
+.booking-card {
+  &.is-clickable {
+    cursor: pointer;
+    transition:
+      border-color 0.15s,
+      box-shadow 0.15s,
+      transform 0.15s;
+
+    &:hover {
+      border-color: $accent-line;
+      transform: translateY(-1px);
+    }
+
+    &:focus-visible {
+      outline: 2px solid $accent-line;
+      outline-offset: 2px;
+    }
+  }
+
+  display: grid;
+  grid-template-columns: 76px 1fr auto;
+  gap: 18px;
+  align-items: center;
+  padding: 14px 16px 14px 14px;
+  border: 1px solid $line;
+  border-radius: $radius;
+  background: $surface;
+  animation: fadeUp 0.3s $ease both;
+  transition:
+    opacity 0.3s,
+    background-color 0.3s;
+
+  @include below(640px) {
+    grid-template-columns: 64px 1fr;
+
+    .booking-card__actions {
+      grid-column: 1 / -1;
+      justify-content: flex-start;
+    }
+  }
+
+  &__date {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 4px;
+    border-radius: 4px 16px 4px 4px;
+    background: $violet;
+    color: $on-accent;
+    line-height: 1.1;
+  }
+
+  &__weekday {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: lowercase;
+    color: rgba(255, 255, 255, 0.92);
+    white-space: nowrap;
+  }
+
+  &__day {
+    font-size: 26px;
+    font-weight: 800;
+  }
+
+  &__month {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  &__body {
+    min-width: 0;
+  }
+
+  &__line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+
+  &__room {
+    font-size: 19px;
+    font-weight: 800;
+  }
+
+  &__time {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-weight: 600;
+  }
+
+  &__duration {
+    color: $muted;
+    font-weight: 400;
+    font-size: 14px;
+  }
+
+  &__comment {
+    margin-top: 4px;
+    color: $muted;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  &.is-past &__date {
+    background: $lilac;
+    color: $on-lime;
+
+    .booking-card__weekday,
+    .booking-card__month {
+      color: $on-lime-2;
+    }
+  }
+
+  &.is-cancelled {
+    background: $surface-muted;
+
+    .booking-card__date {
+      background: $surface-3;
+      color: $muted;
+
+      .booking-card__weekday,
+      .booking-card__month {
+        color: $faint;
+      }
+    }
+
+    .booking-card__room,
+    .booking-card__time {
+      color: $muted;
+    }
+
+    .booking-card__time {
+      text-decoration: line-through;
+      text-decoration-color: $faint;
+    }
+  }
+
+  &.is-just-cancelled {
+    animation: cancelFlash 0.8s ease both;
+  }
+}
+
+@keyframes cancelFlash {
+  from {
+    background: $red-50;
+  }
+}

@@ -1,0 +1,241 @@
+// Три темы: светлая (по умолчанию), тёмная и AMOLED (чистый чёрный для OLED-экранов).
+// Тема выставляется атрибутом data-theme на <html> ещё до первой отрисовки (см. index.html).
+
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+
+  --violet: #4329e0;
+  --violet-hover: #3a21c8;
+  --violet-50: #f1eeff;
+  --violet-100: #e4dfff;
+  --accent-text: #4329e0;
+  --accent-strong-text: #2b179a;
+  --accent-line: #4329e0;
+
+  --lime-solid: #c6eb5b;
+  --lime-hover: #b6dc45;
+  --slot-free: #d6ef87;
+  --slot-free-hover: #c3e75a;
+  --lime-50: #f4fade;
+  --lime-border: #d9ee9c;
+  --lime-text: #55700a;
+  --lilac-50: #f5edff;
+
+  --bg: #f5f4fa;
+  --surface: #ffffff;
+  --surface-2: #f5f4fa;
+  --surface-3: #eeedf4;
+  --surface-muted: #fbfafd;
+  --surface-raised: #ffffff;
+  --row-hover: #faf9fd;
+  --track: #ebe9f3;
+
+  --text: #15122a;
+  --text-2: #3b3851;
+  --muted: #67637e;
+  --faint: #8f8ba3;
+  --line: #e5e2ef;
+  --line-2: #d4d0e3;
+
+  --inverse-bg: #15122a;
+  --inverse-text: #ffffff;
+  --toast-bg: #15122a;
+
+  --red: #d93a3a;
+  --red-hover: #c22f2f;
+  --on-red: #ffffff;
+  --red-50: #fdeeee;
+  --red-border: rgba(217, 58, 58, 0.35);
+  --warn: #8f5500;
+
+  --busy-bg: #d9d5e6;
+  --busy-stripe: rgba(21, 18, 42, 0.22);
+  --busy-soft-bg: #f1f0f6;
+  --busy-soft-stripe: rgba(21, 18, 42, 0.08);
+  --past-bg: #efeef4;
+
+  // Схема: зелёный — свободна весь день, бледно-жёлтый — есть брони, но есть и свободное время.
+  --map-free-bg: #c9efc0;
+  --map-free-border: #5fbf5a;
+  --map-free-bar: #3fa83a;
+  --map-partial-bg: #fffae3;
+  --map-partial-border: #efe2a8;
+  --map-partial-bar: #e9d27c;
+
+  --heat-0: #f3f2f8;
+  --heat-3: #9d8bf2;
+
+  --header-bg: #4329e0;
+  --header-border: transparent;
+  --brand-panel: #4329e0;
+  --overlay: rgba(21, 18, 42, 0.5);
+  --focus-glow: rgba(67, 41, 224, 0.18);
+
+  --shadow-sm: 0 1px 2px rgba(21, 18, 42, 0.06);
+  --shadow: 0 1px 2px rgba(21, 18, 42, 0.05), 0 8px 24px -12px rgba(21, 18, 42, 0.18);
+  --shadow-lg: 0 24px 60px -20px rgba(21, 18, 42, 0.35);
+
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%233b3851' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --violet: #5b43f0;
+  --violet-hover: #6c56ff;
+  --violet-50: rgba(124, 104, 255, 0.14);
+  --violet-100: rgba(124, 104, 255, 0.28);
+  --accent-text: #b0a5ff;
+  --accent-strong-text: #cbc3ff;
+  --accent-line: #8d7bff;
+
+  --lime-solid: #b2d455;
+  --lime-hover: #c6eb5b;
+  --slot-free: #7d9a32;
+  --slot-free-hover: #a3c249;
+  --lime-50: rgba(198, 235, 91, 0.1);
+  --lime-border: rgba(198, 235, 91, 0.3);
+  --lime-text: #c6eb5b;
+  --lilac-50: rgba(196, 155, 255, 0.12);
+
+  --bg: #0e0c18;
+  --surface: #17142a;
+  --surface-2: #1e1a33;
+  --surface-3: #27223f;
+  --surface-muted: #131124;
+  --surface-raised: #3a3462;
+  --row-hover: #1c1830;
+  --track: #241f3c;
+
+  --text: #f1eff9;
+  --text-2: #d0cbe3;
+  --muted: #a19bbb;
+  --faint: #79739a;
+  --line: #2a2642;
+  --line-2: #3b3658;
+
+  --inverse-bg: #f1eff9;
+  --inverse-text: #15122a;
+  --toast-bg: #2a2547;
+
+  --red: #ff6b6b;
+  --red-hover: #ff8585;
+  --on-red: #1a0505;
+  --red-50: rgba(255, 107, 107, 0.12);
+  --red-border: rgba(255, 107, 107, 0.4);
+  --warn: #f2b45c;
+
+  --busy-bg: #2c2846;
+  --busy-stripe: rgba(255, 255, 255, 0.13);
+  --busy-soft-bg: #1a172d;
+  --busy-soft-stripe: rgba(255, 255, 255, 0.05);
+  --past-bg: #1c192e;
+
+  // Схема: зелёный — свободна весь день, бледно-жёлтый — есть брони, но есть и свободное время.
+  --map-free-bg: rgba(74, 222, 128, 0.3);
+  --map-free-border: rgba(74, 222, 128, 0.8);
+  --map-free-bar: #4ade80;
+  --map-partial-bg: rgba(255, 238, 170, 0.22);
+  --map-partial-border: rgba(255, 238, 170, 0.6);
+  --map-partial-bar: #f3e3a3;
+
+  --heat-0: #1e1a33;
+  --heat-3: #4b38c9;
+
+  --header-bg: #2b1aa6;
+  --header-border: transparent;
+  --brand-panel: #2b1aa6;
+  --overlay: rgba(4, 3, 10, 0.68);
+  --focus-glow: rgba(141, 123, 255, 0.35);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 28px -14px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 28px 70px -20px rgba(0, 0, 0, 0.8);
+
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23d0cbe3' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+}
+
+// AMOLED: чистый чёрный фон и поверхности, разделение — тонкими линиями, без теней.
+[data-theme='amoled'] {
+  color-scheme: dark;
+
+  --violet: #5b43f0;
+  --violet-hover: #6c56ff;
+  --violet-50: rgba(124, 104, 255, 0.2);
+  --violet-100: rgba(124, 104, 255, 0.3);
+  --accent-text: #b0a5ff;
+  --accent-strong-text: #cbc3ff;
+  --accent-line: #8d7bff;
+
+  --lime-solid: #b2d455;
+  --lime-hover: #c6eb5b;
+  --slot-free: #6d8a2a;
+  --slot-free-hover: #8fae3b;
+  --lime-50: rgba(198, 235, 91, 0.1);
+  --lime-border: rgba(198, 235, 91, 0.32);
+  --lime-text: #c6eb5b;
+  --lilac-50: rgba(196, 155, 255, 0.12);
+
+  --bg: #000000;
+  --surface: #0c0c10;
+  --surface-2: #15151b;
+  --surface-3: #1f1f27;
+  --surface-muted: #08080b;
+  --surface-raised: #33334a;
+  --row-hover: #15151b;
+  --track: #1b1b22;
+
+  --text: #f3f3f6;
+  --text-2: #cfcfd8;
+  --muted: #9a9aa8;
+  --faint: #7c7c8a;
+  --line: #24242d;
+  --line-2: #3a3a46;
+
+  --inverse-bg: #f3f3f6;
+  --inverse-text: #000000;
+  --toast-bg: #16161c;
+
+  --red: #ff6b6b;
+  --red-hover: #ff8585;
+  --on-red: #1a0505;
+  --red-50: rgba(255, 107, 107, 0.12);
+  --red-border: rgba(255, 107, 107, 0.45);
+  --warn: #f2b45c;
+
+  --busy-bg: #262630;
+  --busy-stripe: rgba(255, 255, 255, 0.13);
+  --busy-soft-bg: #08080a;
+  --busy-soft-stripe: rgba(255, 255, 255, 0.05);
+  --past-bg: #15151b;
+
+  // Схема: зелёный — свободна весь день, бледно-жёлтый — есть брони, но есть и свободное время.
+  --map-free-bg: rgba(74, 222, 128, 0.3);
+  --map-free-border: rgba(74, 222, 128, 0.8);
+  --map-free-bar: #4ade80;
+  --map-partial-bg: rgba(255, 238, 170, 0.22);
+  --map-partial-border: rgba(255, 238, 170, 0.6);
+  --map-partial-bar: #f3e3a3;
+
+  --heat-0: #15151b;
+  --heat-3: #4b38c9;
+
+  --header-bg: #000000;
+  --header-border: #1f1f26;
+  --brand-panel: #000000;
+  --overlay: rgba(0, 0, 0, 0.8);
+  --focus-glow: rgba(141, 123, 255, 0.4);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.6);
+  --shadow: 0 0 0 1px rgba(255, 255, 255, 0.02), 0 10px 28px -14px rgba(0, 0, 0, 0.9);
+  --shadow-lg: 0 0 0 1px #2a2a33;
+
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23cfcfd8' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+}
+
+// На время переключения темы гасим переходы, чтобы цвета не «переливались» по очереди.
+.theme-switching,
+.theme-switching * {
+  transition: none !important;
+}
