@@ -53,6 +53,7 @@ public sealed class BookingTests : IAsyncLifetime
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:CampusFlow"] = connection,
+                ["Auth:AllowedOrigins:0"] = "http://localhost:5173",
                 ["Jwt:Key"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)),
                 ["Jwt:Issuer"] = "CampusFlow", ["Jwt:Audience"] = "CampusFlowClient"
             }));
@@ -78,10 +79,10 @@ public sealed class BookingTests : IAsyncLifetime
         await using var transaction = await db.Database.BeginTransactionAsync();
         var userIds = db.Users.Where(item => logins.Contains(item.Login)).Select(item => item.Id);
         var roomId = room?.Id ?? 0;
-        var roomIds = db.Rooms.Where(item => item.Id == roomId || item.Name == "booking_" + suffix).Select(item => item.Id);
+        var roomIds = db.Rooms.Where(item => item.Id == roomId || item.Name.StartsWith("booking_" + suffix)).Select(item => item.Id);
         await db.RefreshTokens.Where(token => userIds.Contains(token.UserId)).ExecuteDeleteAsync();
         await db.Bookings.Where(booking => userIds.Contains(booking.UserId) || roomIds.Contains(booking.RoomId)).ExecuteDeleteAsync();
-        await db.Rooms.Where(item => item.Id == roomId || item.Name == "booking_" + suffix).ExecuteDeleteAsync();
+        await db.Rooms.Where(item => item.Id == roomId || item.Name.StartsWith("booking_" + suffix)).ExecuteDeleteAsync();
         await db.Users.Where(item => logins.Contains(item.Login)).ExecuteDeleteAsync();
         await transaction.CommitAsync();
     }
@@ -544,9 +545,12 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(adminCancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(adminCancellation.GetProperty("responses").TryGetProperty("409", out _));
         Assert.True(adminList.GetProperty("responses").TryGetProperty("404", out _));
+        Assert.True(adminList.GetProperty("responses").GetProperty("200").GetProperty("headers").TryGetProperty("X-Total-Count", out _));
+        Assert.All(adminList.GetProperty("parameters").EnumerateArray().Where(parameter => parameter.GetProperty("name").GetString() is "limit" or "offset"),
+            parameter => Assert.Equal("integer", parameter.GetProperty("schema").GetProperty("type").GetString()));
         Assert.False(adminList.GetProperty("responses").TryGetProperty("401", out _));
         Assert.False(adminCancellation.GetProperty("responses").TryGetProperty("403", out _));
-        Assert.Equal(new[] { "building", "date", "dateFrom", "dateTo", "q", "roomId", "status", "userId" }, adminList.GetProperty("parameters")
+        Assert.Equal(new[] { "building", "date", "dateFrom", "dateTo", "limit", "offset", "q", "roomId", "sort", "status", "userId" }, adminList.GetProperty("parameters")
             .EnumerateArray().Select(parameter => parameter.GetProperty("name").GetString()).Order().ToArray());
         Assert.All(adminList.GetProperty("parameters").EnumerateArray()
             .Where(parameter => parameter.GetProperty("name").GetString() is "date" or "dateFrom" or "dateTo"),
@@ -776,13 +780,29 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal(result.OrderBy(item => item.Date).ThenBy(item => item.StartTime).ThenBy(item => item.Id), result);
         if (expected.Length == 0)
             Assert.Empty(result);
-        Assert.Equal(1, reads);
+        Assert.Equal(2, reads);
     }
 
     [Theory]
     [InlineData("date=")]
     [InlineData("building=")]
     [InlineData("building=a")]
+    [InlineData("sort=")]
+    [InlineData("sort=user")]
+    [InlineData("sort=unknown")]
+    [InlineData("sort=Date")]
+    [InlineData("limit=")]
+    [InlineData("limit=0")]
+    [InlineData("limit=-1")]
+    [InlineData("limit=101")]
+    [InlineData("limit=1.5")]
+    [InlineData("limit=abc")]
+    [InlineData("limit=2147483648")]
+    [InlineData("offset=")]
+    [InlineData("offset=-1")]
+    [InlineData("offset=1.5")]
+    [InlineData("offset=abc")]
+    [InlineData("offset=2147483648")]
     [InlineData("building=E")]
     [InlineData("building=A,B")]
     [InlineData("building=1")]
@@ -817,6 +837,7 @@ public sealed class BookingTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("VALIDATION_ERROR", error!.Code);
+        Assert.False(response.Headers.Contains("X-Total-Count"));
     }
 
     [Theory]
@@ -897,6 +918,72 @@ public sealed class BookingTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("", "2,3,4,1,5,0", 6)]
+    [InlineData("sort=date", "2,3,4,1,5,0", 6)]
+    [InlineData("sort=-date", "0,5,1,4,3,2", 6)]
+    [InlineData("sort=room", "3,1,5,2,4,0", 6)]
+    [InlineData("sort=date&limit=2", "2,3", 6)]
+    [InlineData("sort=date&offset=2&limit=2", "4,1", 6)]
+    [InlineData("sort=-date&offset=1&limit=2", "5,1", 6)]
+    [InlineData("sort=room&offset=2&limit=2", "5,2", 6)]
+    [InlineData("offset=3", "1,5,0", 6)]
+    [InlineData("offset=6&limit=2", "", 6)]
+    [InlineData("offset=2147483647", "", 6)]
+    [InlineData("offset=0&limit=100", "2,3,4,1,5,0", 6)]
+    [InlineData("status=active&building=A&q={room}&dateFrom={date}&dateTo={date}&sort=-date&limit=1&offset=0", "4", 1)]
+    [InlineData("building=B&status=cancelled&limit=1", "", 0)]
+    public async Task AdminPaginationSortsAllMatchesBeforeSelectingPage(string filter, string expected, int total)
+    {
+        var secondRoom = new Room { Name = "booking_" + suffix + "_sort", Building = "B", Floor = 1, Capacity = 20, Equipment = [] };
+        await using var db = CreateDbContext();
+        db.Rooms.Add(secondRoom);
+        await db.SaveChangesAsync();
+        await db.Rooms.Where(item => item.Id == room.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Name, "booking_" + suffix + "_z"));
+        var rows = new[]
+        {
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date.AddDays(1), StartTime = new(10, 0), EndTime = new(11, 0) },
+            new Booking { UserId = user.Id, RoomId = secondRoom.Id, Date = date, StartTime = new(11, 0), EndTime = new(12, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(9, 0), EndTime = new(10, 0), Status = "cancelled" },
+            new Booking { UserId = user.Id, RoomId = secondRoom.Id, Date = date, StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = date, StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { UserId = user.Id, RoomId = secondRoom.Id, Date = date.AddDays(1), StartTime = new(9, 0), EndTime = new(10, 0) }
+        };
+        foreach (var row in rows)
+        {
+            db.Bookings.Add(row);
+            await db.SaveChangesAsync();
+        }
+        await LoginAsAdminAsync();
+        filter = filter.Replace("{room}", Uri.EscapeDataString("booking_" + suffix + "_z")).Replace("{date}", DateText);
+        var path = $"/api/admin/bookings?userId={user.Id}&" + filter;
+        var expectedIds = expected.Length == 0 ? [] : expected.Split(',').Select(index => rows[int.Parse(index)].Id).ToArray();
+        commands.BookingReads = 0;
+
+        using var response = await client.GetAsync(path);
+        var result = await response.Content.ReadFromJsonAsync<BookingResponse[]>();
+        var reads = commands.BookingReads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expectedIds, result!.Select(item => item.Id));
+        Assert.Equal(total.ToString(CultureInfo.InvariantCulture), response.Headers.GetValues("X-Total-Count").Single());
+        Assert.Equal(2, reads);
+    }
+
+    [Fact]
+    public async Task AdminTotalCountIsExposedToAllowedBrowserOrigin()
+    {
+        await LoginAsAdminAsync();
+        client.DefaultRequestHeaders.Add("Origin", "http://localhost:5173");
+
+        using var response = await client.GetAsync($"/api/admin/bookings?userId={user.Id}&limit=1");
+        var exposed = string.Join(",", response.Headers.GetValues("Access-Control-Expose-Headers"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("0", response.Headers.GetValues("X-Total-Count").Single());
+        Assert.Contains("X-Total-Count", exposed);
+    }
+
+    [Theory]
     [InlineData("name", "0,1")]
     [InlineData("room", "0,1,2")]
     [InlineData("partial-name", "")]
@@ -960,7 +1047,7 @@ public sealed class BookingTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(expectedIds, result!.Select(item => item.Id));
-        Assert.Equal(1, reads);
+        Assert.Equal(2, reads);
     }
 
     [Fact]
@@ -1010,7 +1097,7 @@ public sealed class BookingTests : IAsyncLifetime
 
         Assert.Empty(oldBuilding!);
         Assert.Equal(booking.Id, Assert.Single(currentBuilding!).Id);
-        Assert.Equal(2, reads);
+        Assert.Equal(4, reads);
     }
 
     private async Task<User> LoginAsAdminAsync()

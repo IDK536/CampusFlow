@@ -843,7 +843,7 @@ public sealed class RoomTests : IAsyncLifetime
         }
         client.DefaultRequestHeaders.Add("role", "admin");
 
-        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01&building=invalid");
+        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01&building=invalid&limit=0&offset=-1&sort=user");
         using var cancellation = await client.DeleteAsync("/api/admin/bookings/text");
         using var creation = await client.PostAsJsonAsync("/api/admin/rooms", new { role = "admin", floor = "bad" });
         using var update = await client.PutAsJsonAsync("/api/admin/rooms/text", new { role = "admin" });
@@ -858,6 +858,7 @@ public sealed class RoomTests : IAsyncLifetime
 
         Assert.All(responses, response => Assert.Equal(HttpStatusCode.NotFound, response.StatusCode));
         Assert.All(responses, response => Assert.Empty(response.Headers.WwwAuthenticate));
+        Assert.All(responses, response => Assert.False(response.Headers.Contains("X-Total-Count")));
         Assert.All(bodies, body => Assert.Empty(body));
         Assert.False(await db.Rooms.AnyAsync(room => room.Name == suffix + "_created"));
         Assert.True(await db.Rooms.AnyAsync(room => room.Id == rooms[1].Id));

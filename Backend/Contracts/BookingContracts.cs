@@ -62,6 +62,18 @@ public sealed record BookingCancellationResponse(int Id, string Status);
 
 public sealed class AdminBookingsQuery : IValidatableObject
 {
+    [FromQuery(Name = "sort")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Sort { get; init; }
+
+    [FromQuery(Name = "limit")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Limit { get; init; }
+
+    [FromQuery(Name = "offset")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Offset { get; init; }
+
     [FromQuery(Name = "q")]
     [DisplayFormat(ConvertEmptyStringToNull = false)]
     public string? Q { get; init; }
@@ -96,6 +108,12 @@ public sealed class AdminBookingsQuery : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (Sort is not null && Sort is not ("date" or "-date" or "room"))
+            yield return new ValidationResult("Сортировка должна быть date, -date или room", [nameof(Sort)]);
+        if (Limit is not null && (!int.TryParse(Limit, NumberStyles.None, CultureInfo.InvariantCulture, out var limit) || limit is < 1 or > 100))
+            yield return new ValidationResult("Размер страницы должен быть целым числом от 1 до 100", [nameof(Limit)]);
+        if (Offset is not null && !int.TryParse(Offset, NumberStyles.None, CultureInfo.InvariantCulture, out _))
+            yield return new ValidationResult("Смещение должно быть целым числом не меньше 0", [nameof(Offset)]);
         if (Building is not null && Building is not ("A" or "B" or "C" or "D"))
             yield return new ValidationResult("Корпус должен быть A, B, C или D", [nameof(Building)]);
         foreach (var field in new[] { (Name: nameof(Date), Value: Date), (Name: nameof(DateFrom), Value: DateFrom), (Name: nameof(DateTo), Value: DateTo) })

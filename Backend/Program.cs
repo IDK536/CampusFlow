@@ -80,7 +80,7 @@ builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration>((options, c
     {
         if (allowedOrigins.Length > 0)
             policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod()
-                .WithExposedHeaders("X-Server-Time", "X-Server-Utc-Offset");
+                .WithExposedHeaders("X-Server-Time", "X-Server-Utc-Offset", "X-Total-Count");
     });
 });
 builder.Services.AddSwaggerGen(options =>

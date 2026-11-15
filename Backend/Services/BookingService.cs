@@ -8,6 +8,8 @@ using Npgsql;
 
 namespace CampusFlow.Api.Services;
 
+public sealed record BookingListResult(BookingResponse[] Bookings, int TotalCount);
+
 public sealed record BookingCreationResult(BookingResponse? Booking, string? ErrorCode = null);
 
 public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
@@ -81,17 +83,18 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
     {
         if (!await db.Users.AnyAsync(user => user.Id == userId, cancellationToken))
             return null;
-        return await ReadAsync(new AdminBookingsQuery { UserId = userId, Status = status }, cancellationToken);
+        var result = await ReadAsync(new AdminBookingsQuery { UserId = userId, Status = status }, cancellationToken);
+        return result.Bookings;
     }
 
-    public async Task<BookingResponse[]?> GetAllAsync(int adminId, AdminBookingsQuery filters, CancellationToken cancellationToken)
+    public async Task<BookingListResult?> GetAllAsync(int adminId, AdminBookingsQuery filters, CancellationToken cancellationToken)
     {
         if (!await db.Users.AnyAsync(user => user.Id == adminId, cancellationToken))
             return null;
-        return await ReadAsync(filters, cancellationToken);
+        return await ReadAsync(filters, cancellationToken, includeTotalCount: true);
     }
 
-    private async Task<BookingResponse[]> ReadAsync(AdminBookingsQuery filters, CancellationToken cancellationToken)
+    private async Task<BookingListResult> ReadAsync(AdminBookingsQuery filters, CancellationToken cancellationToken, bool includeTotalCount = false)
     {
         var query = db.Bookings.AsNoTracking();
         if (filters.UserId is not null)
@@ -118,21 +121,32 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
             query = query.Where(booking => booking.Status == status);
         var search = string.IsNullOrWhiteSpace(filters.Q) ? null
             : filters.Q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
-        var bookings = await (from booking in query
+        var joined = from booking in query
                               join room in db.Rooms on booking.RoomId equals room.Id
                               join user in db.Users on booking.UserId equals user.Id
                               where filters.Building == null || room.Building == filters.Building
                               where search == null || EF.Functions.ILike(room.Name, search, "\\") || EF.Functions.ILike(user.DisplayName, search, "\\")
-                              orderby booking.Date, booking.StartTime, booking.Id
                               select new
                               {
                                   booking.Id, booking.RoomId, RoomName = room.Name, booking.UserId,
                                   UserDisplayName = user.DisplayName, booking.Date, booking.StartTime,
                                   booking.EndTime, booking.Status, booking.Comment
-                              }).ToListAsync(cancellationToken);
-        return bookings.Select(booking => new BookingResponse(booking.Id, booking.RoomId, booking.RoomName,
+                              };
+        var totalCount = includeTotalCount ? await joined.CountAsync(cancellationToken) : 0;
+        var sorted = filters.Sort switch
+        {
+            "-date" => joined.OrderByDescending(booking => booking.Date).ThenByDescending(booking => booking.StartTime).ThenByDescending(booking => booking.Id),
+            "room" => joined.OrderBy(booking => booking.RoomName).ThenBy(booking => booking.Date).ThenBy(booking => booking.StartTime).ThenBy(booking => booking.Id),
+            _ => joined.OrderBy(booking => booking.Date).ThenBy(booking => booking.StartTime).ThenBy(booking => booking.Id)
+        };
+        var page = filters.Offset is null ? sorted : sorted.Skip(int.Parse(filters.Offset, CultureInfo.InvariantCulture));
+        if (filters.Limit is not null)
+            page = page.Take(int.Parse(filters.Limit, CultureInfo.InvariantCulture));
+        var bookings = await page.ToListAsync(cancellationToken);
+        var response = bookings.Select(booking => new BookingResponse(booking.Id, booking.RoomId, booking.RoomName,
             booking.UserId, booking.UserDisplayName, booking.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             booking.StartTime.ToString("HH:mm", CultureInfo.InvariantCulture), booking.EndTime.ToString("HH:mm", CultureInfo.InvariantCulture),
             booking.Status, booking.Comment)).ToArray();
+        return new BookingListResult(response, includeTotalCount ? totalCount : response.Length);
     }
 }
