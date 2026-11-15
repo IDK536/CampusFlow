@@ -53,7 +53,7 @@ jobs:
         run: docker exec "$POSTGRES_CONTAINER" createdb -U postgres campusflow
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-      - run: dotnet test Backend/CampusFlow.slnx --configuration Release --no-build -- xUnit.ParallelizeTestCollections=false
+      - run: dotnet test Backend/CampusFlow.slnx --configuration Release --no-build
         env:
           CAMPUSFLOW_TEST_CONNECTION: Host=127.0.0.1;Port=${{ job.services.postgres.ports['5432'] }};Database=campusflow_test;Username=postgres;Password=campusflow_ci
           ConnectionStrings__CampusFlow: Host=127.0.0.1;Port=${{ job.services.postgres.ports['5432'] }};Database=campusflow;Username=postgres;Password=campusflow_ci
