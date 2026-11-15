@@ -57,7 +57,6 @@ public static class DatabaseSeeder
             new Booking { RoomId = roomIds["A-101"], UserId = userIds["student1"], Date = today.AddDays(1), StartTime = new(10, 0), EndTime = new(11, 30), Comment = "Консультация" },
             new Booking { RoomId = roomIds["A-101"], UserId = userIds["student2"], Date = today.AddDays(1), StartTime = new(14, 0), EndTime = new(15, 30), Comment = "Подготовка к семинару" },
             new Booking { RoomId = roomIds["B-101"], UserId = userIds["student2"], Date = today.AddDays(1), StartTime = new(9, 0), EndTime = new(10, 30), Comment = "Собрание группы" },
-            new Booking { RoomId = roomIds["C-110"], UserId = userIds["admin"], Date = today.AddDays(1), StartTime = new(12, 0), EndTime = new(14, 0), Comment = "Встреча с деканом" },
             new Booking { RoomId = roomIds["A-101"], UserId = userIds["student1"], Date = today, StartTime = new(15, 0), EndTime = new(16, 0), Status = "cancelled", Comment = "Отменили" },
             new Booking { RoomId = roomIds["D-101"], UserId = userIds["student2"], Date = today.AddDays(2), StartTime = new(13, 0), EndTime = new(15, 0), Comment = "Лекция" },
             new Booking { RoomId = roomIds["B-204"], UserId = userIds["student1"], Date = today.AddDays(1), StartTime = new(16, 0), EndTime = new(17, 30), Comment = "Кружок" }

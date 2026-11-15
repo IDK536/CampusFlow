@@ -9,7 +9,7 @@ namespace CampusFlow.Api.Services;
 
 public sealed record RoomWriteResult(RoomResponse? Room, string? ErrorCode = null);
 
-public sealed class RoomService(CampusFlowDbContext db)
+public sealed class RoomService(CampusFlowDbContext db, TimeProvider clock)
 {
     public async Task<string?> DeleteAsync(int id, CancellationToken cancellationToken)
     {
@@ -54,9 +54,15 @@ public sealed class RoomService(CampusFlowDbContext db)
         return new(new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment));
     }
 
-    public async Task<RoomResponse[]> GetRoomsAsync(RoomSearchQuery filter, CancellationToken cancellationToken)
+    public async Task<RoomResponse[]> GetRoomsAsync(RoomSearchQuery filter, CancellationToken cancellationToken, bool includeBookingCounts = false)
     {
+        var today = includeBookingCounts ? DateOnly.FromDateTime(clock.GetLocalNow().DateTime) : default;
         var query = db.Rooms.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(filter.Q))
+        {
+            var name = filter.Q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            query = query.Where(room => EF.Functions.ILike(room.Name, name, "\\"));
+        }
         if (filter.Building is not null)
             query = query.Where(room => room.Building == filter.Building);
         if (filter.MinCapacity is not null)
@@ -64,21 +70,33 @@ public sealed class RoomService(CampusFlowDbContext db)
             var capacity = int.Parse(filter.MinCapacity, CultureInfo.InvariantCulture);
             query = query.Where(room => room.Capacity >= capacity);
         }
+        if (filter.Floor is not null)
+        {
+            var floor = int.Parse(filter.Floor, CultureInfo.InvariantCulture);
+            query = query.Where(room => room.Floor == floor);
+        }
         var equipment = filter.GetEquipment();
         if (equipment.Length > 0)
             query = query.Where(room => equipment.All(item => room.Equipment.Contains(item)));
         return await query.OrderBy(room => room.Id)
-            .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment))
+            .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment,
+                includeBookingCounts ? db.Bookings.Count(booking => booking.RoomId == room.Id && booking.Status == "active" && booking.Date >= today) : (int?)null,
+                includeBookingCounts ? db.Bookings.Any(booking => booking.RoomId == room.Id) : (bool?)null))
             .ToArrayAsync(cancellationToken);
     }
 
-    public Task<RoomResponse?> GetRoomAsync(int id, CancellationToken cancellationToken) => db.Rooms.AsNoTracking()
-        .Where(room => room.Id == id)
-        .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment))
-        .SingleOrDefaultAsync(cancellationToken);
+    public Task<RoomResponse?> GetRoomAsync(int id, CancellationToken cancellationToken, bool includeBookingCounts = false)
+    {
+        var today = includeBookingCounts ? DateOnly.FromDateTime(clock.GetLocalNow().DateTime) : default;
+        return db.Rooms.AsNoTracking().Where(room => room.Id == id)
+            .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment,
+                includeBookingCounts ? db.Bookings.Count(booking => booking.RoomId == room.Id && booking.Status == "active" && booking.Date >= today) : (int?)null,
+                includeBookingCounts ? db.Bookings.Any(booking => booking.RoomId == room.Id) : (bool?)null))
+            .SingleOrDefaultAsync(cancellationToken);
+    }
 
     public async Task<AvailableRoomsResponse> GetAvailabilityAsync(RoomResponse[] rooms, string dateText,
-        string? startTime, string? endTime, CancellationToken cancellationToken)
+        string? startTime, string? endTime, int? minDuration, DateTime serverTime, int utcOffset, CancellationToken cancellationToken)
     {
         var date = DateOnly.ParseExact(dateText, "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var roomIds = rooms.Select(room => room.Id).ToArray();
@@ -95,13 +113,22 @@ public sealed class RoomService(CampusFlowDbContext db)
         {
             var intervals = byRoom[room.Id].Select(booking => (Start: booking.StartTime, End: booking.EndTime));
             var free = CalculateFreeSlots(intervals);
-            if (requestedStart.HasValue && !free.Any(slot => slot.Start <= requestedStart.Value && slot.End >= requestedEnd!.Value))
+            if (minDuration.HasValue)
+            {
+                free = free.Select(slot => (Start: slot.Start < requestedStart!.Value ? requestedStart.Value : slot.Start,
+                        End: slot.End > requestedEnd!.Value ? requestedEnd.Value : slot.End))
+                    .Where(slot => slot.End > slot.Start && (slot.End - slot.Start).TotalMinutes >= minDuration.Value)
+                    .ToList();
+                if (free.Count == 0)
+                    continue;
+            }
+            else if (requestedStart.HasValue && !free.Any(slot => slot.Start <= requestedStart.Value && slot.End >= requestedEnd!.Value))
                 continue;
             var slots = free.Select(slot => new FreeSlotResponse(slot.Start.ToString("HH:mm", CultureInfo.InvariantCulture),
                 slot.End.ToString("HH:mm", CultureInfo.InvariantCulture))).ToArray();
-            result.Add(new AvailableRoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment, slots));
+            result.Add(new AvailableRoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment, slots, room.ActiveBookings, room.HasBookings));
         }
-        return new AvailableRoomsResponse(dateText, result.ToArray());
+        return new AvailableRoomsResponse(dateText, result.ToArray(), serverTime, utcOffset);
     }
 
     private static List<(TimeOnly Start, TimeOnly End)> CalculateFreeSlots(IEnumerable<(TimeOnly Start, TimeOnly End)> bookings)

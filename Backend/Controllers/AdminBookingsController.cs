@@ -22,9 +22,11 @@ public sealed class AdminBookingsController(BookingService bookings) : Controlle
         if (!int.TryParse(User.FindFirstValue("sub"), NumberStyles.None, CultureInfo.InvariantCulture, out var adminId) || adminId <= 0)
             return NotFound();
         var result = await bookings.GetAllAsync(adminId, query, cancellationToken);
-        return result is null
-            ? NotFound()
-            : Ok(result);
+        if (result is null)
+            return NotFound();
+        Response.Headers["X-Total-Count"] = result.TotalCount.ToString(CultureInfo.InvariantCulture);
+        Response.Headers["X-Active-Count"] = result.ActiveCount.ToString(CultureInfo.InvariantCulture);
+        return Ok(result.Bookings);
     }
 
     [HttpDelete("{id}")]

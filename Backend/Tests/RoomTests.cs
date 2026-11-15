@@ -18,6 +18,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
 
@@ -28,6 +29,7 @@ public sealed class RoomTests : IAsyncLifetime
     private readonly string suffix = Guid.NewGuid().ToString("N");
     private readonly DateOnly date = DateOnly.FromDateTime(DateTime.Now).AddDays(1);
     private readonly QueryCounter counter = new();
+    private readonly TestClock clock = new();
     private readonly string signingKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
     private string connection = null!;
     private WebApplicationFactory<Program> factory = null!;
@@ -70,9 +72,15 @@ public sealed class RoomTests : IAsyncLifetime
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:CampusFlow"] = connection,
+                ["Auth:AllowedOrigins:0"] = "http://localhost:5173",
                 ["Jwt:Key"] = signingKey, ["Jwt:Issuer"] = "CampusFlow", ["Jwt:Audience"] = "CampusFlowClient"
             }));
-            builder.ConfigureServices(services => services.AddDbContext<CampusFlowDbContext>((_, options) => options.AddInterceptors(counter)));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(clock);
+                services.AddDbContext<CampusFlowDbContext>((_, options) => options.AddInterceptors(counter));
+            });
         });
         client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = false });
         using var login = await client.PostAsJsonAsync("/api/auth/login", new { login = user.Login, password = "password" });
@@ -123,6 +131,107 @@ public sealed class RoomTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("list", 1)]
+    [InlineData("availability", 2)]
+    [InlineData("card", 1)]
+    public async Task AdminRoomCountersIncludeTodayAndHistoryRegardlessOfSearchDate(string view, int expectedReads)
+    {
+        var today = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var emptyRoom = new Room { Name = suffix + "_counts_empty", Building = "A", Floor = 1, Capacity = 10, Equipment = [] };
+        await using var db = CreateDbContext();
+        db.Rooms.Add(emptyRoom);
+        db.Bookings.AddRange(
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today, StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(1), StartTime = new(17, 0), EndTime = new(18, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(14), StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(-1), StartTime = new(11, 0), EndTime = new(12, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today, StartTime = new(10, 0), EndTime = new(11, 0), Status = "cancelled" },
+            new Booking { RoomId = rooms[3].Id, UserId = user.Id, Date = today.AddDays(-1), StartTime = new(9, 0), EndTime = new(10, 0), Status = "cancelled" });
+        await db.SaveChangesAsync();
+        await LoginAsAdminAsync();
+        clock.SetLocal(today.ToDateTime(new TimeOnly(18, 30)));
+        var path = view switch
+        {
+            "card" => $"/api/rooms/{rooms[1].Id}",
+            "availability" => $"/api/rooms?date={today.AddDays(4):yyyy-MM-dd}&building=A",
+            _ => "/api/rooms?building=A"
+        };
+        counter.Reads = 0;
+
+        using var response = await client.GetAsync(path);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var returned = view == "card" ? new[] { body.RootElement }
+            : (view == "availability" ? body.RootElement.GetProperty("rooms") : body.RootElement).EnumerateArray().ToArray();
+        var reads = counter.Reads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var room = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == rooms[1].Id);
+        Assert.Equal(3, room.GetProperty("activeBookings").GetInt32());
+        Assert.True(room.GetProperty("hasBookings").GetBoolean());
+        if (view != "card")
+        {
+            var historyOnly = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == rooms[3].Id);
+            var empty = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == emptyRoom.Id);
+            Assert.Equal(0, historyOnly.GetProperty("activeBookings").GetInt32());
+            Assert.True(historyOnly.GetProperty("hasBookings").GetBoolean());
+            Assert.Equal(0, empty.GetProperty("activeBookings").GetInt32());
+            Assert.False(empty.GetProperty("hasBookings").GetBoolean());
+        }
+        Assert.Equal(expectedReads, reads);
+    }
+
+    [Theory]
+    [InlineData("student", false)]
+    [InlineData("confirmed", true)]
+    [InlineData("role_changed", false)]
+    [InlineData("promoted", false)]
+    [InlineData("deleted", false)]
+    public async Task RoomCountersRequireBothAdminJwtAndCurrentDatabaseRole(string state, bool includeCounters)
+    {
+        if (state is "confirmed" or "role_changed" or "deleted")
+            await LoginAsAdminAsync();
+        await using var db = CreateDbContext();
+        if (state == "role_changed")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "student"));
+        if (state == "promoted")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        if (state == "deleted")
+        {
+            await db.RefreshTokens.Where(item => item.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Bookings.Where(item => item.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Users.Where(item => item.Id == user.Id).ExecuteDeleteAsync();
+        }
+        var paths = new[] { "/api/rooms", $"/api/rooms?date={DateText}", $"/api/rooms/{rooms[1].Id}" };
+        var results = new List<(HttpStatusCode Status, bool Active, bool Has, string[] Fields)>();
+
+        foreach (var path in paths)
+        {
+            using var response = await client.GetAsync(path);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var room = path.Contains("?date=") ? body.RootElement.GetProperty("rooms").EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == rooms[1].Id)
+                : body.RootElement.ValueKind == JsonValueKind.Array ? body.RootElement.EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == rooms[1].Id)
+                : body.RootElement;
+            results.Add((response.StatusCode, room.TryGetProperty("activeBookings", out _), room.TryGetProperty("hasBookings", out _),
+                room.EnumerateObject().Select(item => item.Name).Order().ToArray()));
+        }
+
+        Assert.All(results, result =>
+        {
+            Assert.Equal(HttpStatusCode.OK, result.Status);
+            Assert.Equal(includeCounters, result.Active);
+            Assert.Equal(includeCounters, result.Has);
+        });
+        if (!includeCounters)
+        {
+            Assert.Equal(new[] { "building", "capacity", "equipment", "floor", "id", "name" }, results[0].Fields);
+            Assert.Equal(new[] { "building", "capacity", "equipment", "floor", "freeSlots", "id", "name" }, results[1].Fields);
+            Assert.Equal(results[0].Fields, results[2].Fields);
+        }
+    }
+
+    [Theory]
+    [InlineData("?floor=2", 1)]
+    [InlineData("?floor=1&building=A&minCapacity=30&equipment=projector", 0)]
     [InlineData("?building=A", 0, 1, 3)]
     [InlineData("?minCapacity=40", 1, 3)]
     [InlineData("?equipment=whiteboard", 0, 2, 3)]
@@ -136,6 +245,52 @@ public sealed class RoomTests : IAsyncLifetime
         var result = await client.GetFromJsonAsync<RoomResponse[]>("/api/rooms" + query);
 
         Assert.Equal(expected, result!.Where(room => ownIds.Contains(room.Id)).Select(room => room.Id).Order());
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("case", false)]
+    [InlineData("spaces", false)]
+    [InlineData("partial", false)]
+    [InlineData("wildcard", false)]
+    [InlineData("empty", false)]
+    [InlineData("blank", false)]
+    [InlineData("exact", true)]
+    [InlineData("conflict", true)]
+    public async Task RoomQMatchesFullLiteralNameAndCombinesFilters(string mode, bool withDate)
+    {
+        var name = "Аудитория_%\\" + suffix;
+        await using var db = CreateDbContext();
+        await db.Rooms.Where(item => item.Id == rooms[0].Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Name, name));
+        var q = mode switch
+        {
+            "case" => name.ToUpperInvariant(),
+            "spaces" => "  " + name + "  ",
+            "partial" => name[..^1],
+            "wildcard" => "%",
+            "empty" => "",
+            "blank" => "   ",
+            _ => name
+        };
+        var path = "/api/rooms?q=" + Uri.EscapeDataString(q);
+        if (withDate)
+            path += $"&date={DateText}&building=A&floor=1&minCapacity=30&equipment=projector,whiteboard&startTime=10:30&endTime=12:00&minDuration=60";
+        if (mode == "conflict")
+            path = path.Replace("building=A", "building=B");
+        var expected = mode is "partial" or "wildcard" or "conflict" ? []
+            : mode is "empty" or "blank" ? rooms.Select(item => item.Id).Order().ToArray() : new[] { rooms[0].Id };
+        var ownIds = rooms.Select(item => item.Id).ToArray();
+        counter.Reads = 0;
+
+        using var response = await client.GetAsync(path);
+        var result = withDate
+            ? (await response.Content.ReadFromJsonAsync<AvailableRoomsResponse>())!.Rooms.Select(item => item.Id).ToArray()
+            : (await response.Content.ReadFromJsonAsync<RoomResponse[]>())!.Select(item => item.Id).ToArray();
+        var reads = counter.Reads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expected, result.Where(ownIds.Contains).Order());
+        Assert.Equal(withDate ? 2 : 1, reads);
     }
 
     [Fact]
@@ -171,6 +326,83 @@ public sealed class RoomTests : IAsyncLifetime
         Assert.DoesNotContain(result.Rooms, room => room.Id == rooms[1].Id || room.Id == rooms[2].Id);
     }
 
+    [Theory]
+    [InlineData("10:00", "15:00", 90, true)]
+    [InlineData("10:00", "15:00", 120, false)]
+    [InlineData("11:00", "14:30", 60, true)]
+    [InlineData("11:30", "14:30", 60, false)]
+    [InlineData("12:00", "14:00", 30, false)]
+    [InlineData("09:00", "18:00", 540, false)]
+    public async Task DurationSearchRequiresOneContinuousWindow(string start, string end, int duration, bool fits)
+    {
+        var path = $"/api/rooms?date={DateText}&startTime={start}&endTime={end}&minDuration={duration}";
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+
+        Assert.Equal(fits, result!.Rooms.Any(room => room.Id == rooms[0].Id));
+        Assert.Contains(result.Rooms, room => room.Id == rooms[1].Id);
+        Assert.DoesNotContain(result.Rooms, room => room.Id == rooms[2].Id);
+        Assert.All(result.Rooms.SelectMany(room => room.FreeSlots), slot =>
+        {
+            Assert.True(TimeOnly.Parse(slot.StartTime) >= TimeOnly.Parse(start));
+            Assert.True(TimeOnly.Parse(slot.EndTime) <= TimeOnly.Parse(end));
+            Assert.True((TimeOnly.Parse(slot.EndTime) - TimeOnly.Parse(slot.StartTime)).TotalMinutes >= duration);
+        });
+    }
+
+    [Fact]
+    public async Task DurationSearchClipsWindowsAndCombinesRoomFilters()
+    {
+        var path = $"/api/rooms?date={DateText}&building=A&floor=1&minCapacity=30&equipment=projector,whiteboard&startTime=11:00&endTime=14:30&minDuration=30";
+        var ownIds = rooms.Select(room => room.Id).ToArray();
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+
+        var room = Assert.Single(result!.Rooms, room => ownIds.Contains(room.Id));
+        Assert.Equal(rooms[0].Id, room.Id);
+        Assert.Equal([new FreeSlotResponse("11:00", "12:00"), new FreeSlotResponse("14:00", "14:30")], room.FreeSlots);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AvailabilityBodyAndHeadersUseTheSameServerTime(bool individualRoom)
+    {
+        var path = individualRoom ? $"/api/rooms/{rooms[1].Id}/free-slots?date={DateText}"
+            : $"/api/rooms?date={DateText}";
+
+        using var response = await client.GetAsync(path);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var headerTime = DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(clock.GetUtcNow(), headerTime);
+        Assert.Equal(clock.GetUtcNow().UtcDateTime, body.RootElement.GetProperty("serverTime").GetDateTime());
+        Assert.Equal(DateTimeKind.Utc, body.RootElement.GetProperty("serverTime").GetDateTime().Kind);
+        Assert.Equal("330", response.Headers.GetValues("X-Server-Utc-Offset").Single());
+        Assert.Equal(330, body.RootElement.GetProperty("utcOffset").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("/api/rooms", 200)]
+    [InlineData("/api/rooms?floor=0", 400)]
+    [InlineData("/api/rooms/0", 404)]
+    [InlineData("/api/admin/rooms/unknown", 404)]
+    public async Task ServerTimeHeadersAreAvailableAcrossApiResponses(string path, int status)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("Origin", "http://localhost:5173");
+
+        using var response = await client.SendAsync(request);
+        var exposed = string.Join(",", response.Headers.GetValues("Access-Control-Expose-Headers"));
+
+        Assert.Equal(status, (int)response.StatusCode);
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture));
+        Assert.Equal("330", response.Headers.GetValues("X-Server-Utc-Offset").Single());
+        Assert.Contains("X-Server-Time", exposed);
+        Assert.Contains("X-Server-Utc-Offset", exposed);
+    }
+
     [Fact]
     public async Task AdjacentBookingsMergeIntoOneOccupiedInterval()
     {
@@ -201,6 +433,25 @@ public sealed class RoomTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("floor=0")]
+    [InlineData("floor=-1")]
+    [InlineData("floor=1.5")]
+    [InlineData("floor=abc")]
+    [InlineData("floor=")]
+    [InlineData("floor=2147483648")]
+    [InlineData("minDuration=60")]
+    [InlineData("date=2035-01-01&minDuration=60")]
+    [InlineData("startTime=12:00&endTime=16:00&minDuration=60")]
+    [InlineData("date=2035-01-01&startTime=12:00&minDuration=60")]
+    [InlineData("date=2035-01-01&endTime=16:00&minDuration=60")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=0")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=-30")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=45")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=270")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=60.0")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=abc")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=2147483648")]
     [InlineData("building=Z")]
     [InlineData("building=a")]
     [InlineData("building=")]
@@ -285,6 +536,7 @@ public sealed class RoomTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal("UNAUTHORIZED", error!.Code);
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture));
     }
 
     [Fact]
@@ -301,6 +553,13 @@ public sealed class RoomTests : IAsyncLifetime
             .GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.Equal("bearer", schema.RootElement.GetProperty("components").GetProperty("securitySchemes")
             .GetProperty("Bearer").GetProperty("scheme").GetString());
+        var search = schema.RootElement.GetProperty("paths").GetProperty("/api/rooms").GetProperty("get");
+        Assert.Contains(search.GetProperty("parameters").EnumerateArray(), parameter =>
+            parameter.GetProperty("name").GetString() == "minDuration" && parameter.GetProperty("schema").GetProperty("type").GetString() == "integer");
+        Assert.Contains(search.GetProperty("parameters").EnumerateArray(), parameter =>
+            parameter.GetProperty("name").GetString() == "floor" && parameter.GetProperty("schema").GetProperty("type").GetString() == "integer");
+        Assert.True(search.GetProperty("responses").GetProperty("200").GetProperty("headers").TryGetProperty("X-Server-Time", out _));
+        Assert.True(search.GetProperty("responses").GetProperty("400").GetProperty("headers").TryGetProperty("X-Server-Utc-Offset", out _));
     }
 
     [Fact]
@@ -683,7 +942,7 @@ public sealed class RoomTests : IAsyncLifetime
         }
         client.DefaultRequestHeaders.Add("role", "admin");
 
-        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01");
+        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01&building=invalid&limit=0&offset=-1&sort=user");
         using var cancellation = await client.DeleteAsync("/api/admin/bookings/text");
         using var creation = await client.PostAsJsonAsync("/api/admin/rooms", new { role = "admin", floor = "bad" });
         using var update = await client.PutAsJsonAsync("/api/admin/rooms/text", new { role = "admin" });
@@ -692,11 +951,15 @@ public sealed class RoomTests : IAsyncLifetime
         using var malformed = await client.PostAsync("/api/admin/rooms", new StringContent("{", Encoding.UTF8, "application/json"));
         using var wrongMethod = await client.GetAsync("/api/admin/rooms");
         using var unknown = await client.GetAsync("/api/admin/missing");
-        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown };
+        using var users = await client.GetAsync("/api/admin/users");
+        using var stats = await client.GetAsync("/api/admin/stats?dateFrom=bad&dateTo=2000-01-01&building=invalid");
+        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown, users, stats };
         var bodies = await Task.WhenAll(responses.Select(response => response.Content.ReadAsStringAsync()));
 
         Assert.All(responses, response => Assert.Equal(HttpStatusCode.NotFound, response.StatusCode));
         Assert.All(responses, response => Assert.Empty(response.Headers.WwwAuthenticate));
+        Assert.All(responses, response => Assert.False(response.Headers.Contains("X-Total-Count")));
+        Assert.All(responses, response => Assert.False(response.Headers.Contains("X-Active-Count")));
         Assert.All(bodies, body => Assert.Empty(body));
         Assert.False(await db.Rooms.AnyAsync(room => room.Name == suffix + "_created"));
         Assert.True(await db.Rooms.AnyAsync(room => room.Id == rooms[1].Id));
@@ -747,6 +1010,14 @@ public sealed class RoomTests : IAsyncLifetime
     }
 
     private CampusFlowDbContext CreateDbContext() => new(new DbContextOptionsBuilder<CampusFlowDbContext>().UseNpgsql(connection).Options);
+
+    private sealed class TestClock : TimeProvider
+    {
+        private DateTimeOffset now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => now;
+        public void SetLocal(DateTime local) => now = new DateTimeOffset(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), LocalTimeZone.BaseUtcOffset).ToUniversalTime();
+        public override TimeZoneInfo LocalTimeZone { get; } = TimeZoneInfo.CreateCustomTimeZone("RoomTests", TimeSpan.FromMinutes(330), "RoomTests", "RoomTests");
+    }
 
     private sealed class QueryCounter : DbCommandInterceptor
     {

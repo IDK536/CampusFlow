@@ -1,3 +1,4 @@
+using CampusFlow.Api.Middleware;
 using CampusFlow.Api.Data;
 using System.Text;
 using CampusFlow.Api.Configuration;
@@ -35,7 +36,9 @@ builder.Services.AddOptions<JwtOptions>().BindConfiguration("Jwt")
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<RoomService>();
+builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<BookingService>();
+builder.Services.AddScoped<StatsService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
     .Configure<IOptions<JwtOptions>>((options, settings) =>
@@ -77,7 +80,8 @@ builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration>((options, c
     options.AddDefaultPolicy(policy =>
     {
         if (allowedOrigins.Length > 0)
-            policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod();
+            policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod()
+                .WithExposedHeaders("X-Server-Time", "X-Server-Utc-Offset", "X-Total-Count", "X-Active-Count");
     });
 });
 builder.Services.AddSwaggerGen(options =>
@@ -89,8 +93,12 @@ builder.Services.AddSwaggerGen(options =>
     });
     options.OperationFilter<RoomSearchOperationFilter>();
     options.OperationFilter<AdminBookingsOperationFilter>();
+    options.OperationFilter<MyBookingsOperationFilter>();
+    options.OperationFilter<StatsOperationFilter>();
     options.OperationFilter<AuthorizationOperationFilter>();
+    options.OperationFilter<ServerTimeOperationFilter>();
     options.SchemaFilter<BookingRequestSchemaFilter>();
+    options.SchemaFilter<BookingHistorySchemaFilter>();
 });
 builder.Services.AddDbContext<CampusFlowDbContext>(options => options.UseNpgsql(
     builder.Configuration.GetConnectionString("CampusFlow")
@@ -109,6 +117,7 @@ if (seedRequested)
 
 app.UseSwagger();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("/swagger/v1/swagger.json", "CampusFlow API v1"));
+app.UseMiddleware<ServerTimeMiddleware>();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();

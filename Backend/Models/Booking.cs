@@ -10,4 +10,7 @@ public sealed class Booking
     public TimeOnly EndTime { get; set; }
     public string Status { get; set; } = "active";
     public string? Comment { get; set; }
+    public DateTimeOffset? CreatedAt { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
+    public string? CancelledBy { get; set; }
 }
