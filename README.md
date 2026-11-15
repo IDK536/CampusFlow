@@ -59,98 +59,43 @@ docker compose run --rm --no-deps -p 8080:8080 backend
 
 Порт 8080 должен быть свободен. `Ctrl+C` остановит дополнительный экземпляр. Защищённые методы используют access JWT из ответа `/api/auth/login`; в Swagger вставьте токен через Authorize.
 
-### Формат и авторизация
+### Контракты
 
-JSON UTF-8; даты `YYYY-MM-DD`, время `HH:MM`, события истории — ISO 8601 UTC. Защищённые запросы: `Authorization: Bearer <token>`. Роли ниже: S — student, A — admin.
+JSON UTF-8; даты `YYYY-MM-DD`, время `HH:MM`, события истории — ISO 8601 UTC. Защищённые запросы используют `Authorization: Bearer <token>`. Пути ниже добавляются к `/api`; подробная валидация и правила — в Swagger.
 
-Login принимает `{"login":"student1","password":"student1"}` и возвращает `{"token":"<access JWT>","user":User}`. Login и refresh устанавливают cookie `campusflow_refresh` (HttpOnly, SameSite=Lax, Path=/api/auth). Refresh и logout не требуют access-токена; refresh использует cookie, logout без cookie также возвращает 204; при запросах браузера с другого origin нужны credentials и разрешённый origin. Refresh ротируется без продления первоначального срока; по умолчанию access действует 60 минут, refresh — 7 дней.
-
-### Модели ответов и тела запросов
+| Метод | Путь | Параметры / тело | Успешный ответ |
+|---|---|---|---|
+| POST | `/auth/login` | `{login, password}` | `200 {token, user:User}` + refresh-cookie |
+| POST | `/auth/refresh` | Refresh-cookie | `200 {token, user:User}` + новая cookie |
+| POST | `/auth/logout` | Cookie, если есть | `204` |
+| GET | `/rooms` | q, building, floor, minCapacity, equipment, date, startTime, endTime, minDuration | `200 Room[]`; с date — `RoomList` |
+| GET | `/rooms/{id}` | id | `200 Room` |
+| GET | `/rooms/{id}/free-slots` | id, обязательная date | `200 {roomId, date, serverTime, utcOffset, freeSlots:Slot[]}` |
+| POST | `/bookings` | `BookingInput` | `201 Booking` |
+| GET | `/bookings/my` | status, scope | `200 Booking[]` |
+| DELETE | `/bookings/{id}` | id | `200 {id, status:"cancelled"}` |
+| GET | `/admin/users` | — | `200 User[]` |
+| GET | `/admin/bookings` | q, date, dateFrom, dateTo, building, roomId, userId, status, sort, limit, offset | `200 Booking[]`; заголовки `X-Total-Count`, `X-Active-Count` |
+| DELETE | `/admin/bookings/{id}` | id | `200 {id, status:"cancelled"}` |
+| POST | `/admin/rooms` | `RoomInput` | `201 Room` + Location |
+| PUT | `/admin/rooms/{id}` | id, `RoomInput` | `200 Room` |
+| DELETE | `/admin/rooms/{id}` | id | `204` |
+| GET | `/admin/stats` | Обязательные dateFrom/dateTo; необязательный building | `200 Stats` |
 
 | Модель | Поля |
 |---|---|
-| `User` | `id:int`, `login:string`, `displayName:string`, `role:student|admin` |
-| `Room` | `id:int`, `name:string`, `building:A|B|C|D`, `floor:int`, `capacity:int`, `equipment:string[]` |
+| `User` | `id:int`, `login:string`, `displayName:string`, `role:student/admin` |
+| `Room` | `id:int`, `name:string`, `building:string`, `floor:int`, `capacity:int`, `equipment:string[]`; для подтверждённого admin также `activeBookings:int`, `hasBookings:bool` |
 | `Slot` | `startTime:string`, `endTime:string` |
-| `Booking` | `id:int`, `roomId:int`, `roomName:string`, `userId:int`, `userDisplayName:string`, `date:string`, `startTime:string`, `endTime:string`, `status:active|cancelled`, `comment:string|null`, `createdAt:UTC|null`, `cancelledAt:UTC|null`, `cancelledBy:owner|admin|null` |
-| Создание брони | `roomId:int`, `date:string`, `startTime:string`, `endTime:string`; `comment:string|null` необязателен |
-| Создание / изменение аудитории | Все поля обязательны: `name:string`, `building:string`, `floor:int`, `capacity:int`, `equipment:string[]` |
+| `RoomList` | `date:string`, `serverTime:UTC`, `utcOffset:int`, `rooms:[Room + {freeSlots:Slot[]}]` |
+| `Booking` | `id:int`, `roomId:int`, `roomName:string`, `userId:int`, `userDisplayName:string`, `date:string`, `startTime:string`, `endTime:string`, `status:active/cancelled`, `comment:string/null`, `createdAt:UTC/null`, `cancelledAt:UTC/null`, `cancelledBy:owner/admin/null` |
+| `BookingInput` | Обязательные `roomId:int`, `date:string`, `startTime:string`, `endTime:string`; необязательный `comment:string/null` |
+| `RoomInput` | Все обязательны: `name:string`, `building:string`, `floor:int`, `capacity:int`, `equipment:string[]` |
+| `Stats` | `totals:{bookings, minutes, percent}`, `byBuilding:[{building, rooms, minutes, percent}]`, `byDay:[{date, bookings, minutes, percent}]`, `cells:[{building, date, bookings, minutes, capacityMinutes, percent}]`, `byHalfHour:number[]`, `topRooms:[{roomId, name, minutes, bookings}]` |
 
-Название аудитории непустое и уникальное, floor/capacity >= 1. Допустимое оборудование: `projector`, `whiteboard`, `computers`, `audio`, `video`; пустой массив разрешён. ID, владелец и история задаются сервером; лишние поля JSON игнорируются. У старых броней неизвестные поля истории остаются null.
+Значения параметров: building — A–D; equipment — projector/whiteboard/computers/audio/video через запятую; status — active/cancelled; scope — upcoming/past; sort — date/-date/room. limit — целое 1–100, offset — целое >= 0, minDuration — минуты >= 30, кратные 30. Остальные числовые фильтры и ID — положительные целые.
 
-Только подтверждённый A получает в списке и карточке аудитории `activeBookings:int` (active с датой >= сегодня, включая закончившиеся сегодня) и `hasBookings:bool` (любая история). Эти счётчики не зависят от даты поиска; у студента поля отсутствуют. Ответы записи аудитории и отдельного free-slots их не содержат.
-
-### Маршруты
-
-Все пути в таблице добавляются к `/api`. Перечислены успешные ответы; ошибки описаны ниже.
-
-| Метод | Путь | Доступ | Запрос → ответ |
-|---|---|---|---|
-| POST | `/auth/login` | Без access | login/password → `200 {token, user}` + cookie |
-| POST | `/auth/refresh` | Cookie | Без тела → `200 {token, user}` + новая cookie |
-| POST | `/auth/logout` | Без access | Без тела → `204`, cookie удаляется, при её наличии сессия отзывается |
-| GET | `/rooms` | S, A | Фильтры → `200 Room[]`; с date — оболочка ниже |
-| GET | `/rooms/{id}` | S, A | → `200 Room` |
-| GET | `/rooms/{id}/free-slots?date=...` | S, A | → `200 {roomId, date, serverTime, utcOffset, freeSlots:Slot[]}` |
-| POST | `/bookings` | S | Тело создания брони → `201 Booking` |
-| GET | `/bookings/my` | S | status/scope → `200 Booking[]` |
-| DELETE | `/bookings/{id}` | S | → `200 {id, status:"cancelled"}` |
-| GET | `/admin/users` | A | Без фильтров → `200 User[]`, только студенты, включая пользователей без броней |
-| GET | `/admin/bookings` | A | Фильтры/сортировка/страница → `200 Booking[]` + счётчики заголовками |
-| DELETE | `/admin/bookings/{id}` | A | → `200 {id, status:"cancelled"}` |
-| POST | `/admin/rooms` | A | Тело аудитории → `201 Room`, заголовок Location |
-| PUT | `/admin/rooms/{id}` | A | Полная замена полей → `200 Room` |
-| DELETE | `/admin/rooms/{id}` | A | → `204`, только без истории броней |
-| GET | `/admin/stats` | A | Обязательные dateFrom/dateTo, необязательный building → `200 Stats` |
-
-### Поиск аудиторий
-
-Все параметры необязательны: `building`, `floor`, `minCapacity`, `equipment`, `q`, `date`, `startTime`, `endTime`, `minDuration`. Корпус A–D, этаж/вместимость — положительные целые; оборудование передаётся через запятую и применяется через AND. `q` — полное название без учёта регистра, пробелы по краям удаляются; пустой q не фильтрует. Все фильтры объединяются через AND.
-
-Дата не раньше сегодняшней. Время передаётся парой и только с датой. Без minDuration весь интервал должен быть свободен. С `minDuration` (целые минуты >= 30, кратные 30, не больше длины интервала) ищется непрерывное окно внутри границ; в freeSlots остаются подходящие окна, обрезанные по границам поиска. Без minDuration freeSlots содержит свободные интервалы всего дня.
-
-Ответ с датой: `{date, serverTime, utcOffset, rooms:[Room + {freeSlots:Slot[]}]}`. Без интервала возвращаются и полностью занятые аудитории с пустым freeSlots. Незанятое прошедшее время сегодня API не обрезает; создать бронь в прошлом нельзя.
-
-### Списки бронирований
-
-Личный список: `status=active|cancelled`, `scope=upcoming|past`. Upcoming — активные с окончанием позже текущего момента, включая текущую бронь; past — закончившиеся независимо от статуса. Будущие отменённые доступны без scope. status и scope работают через AND; без обоих возвращаются все собственные брони, порядок — дата/начало/ID по возрастанию.
-
-Административный список: `date`, `dateFrom`, `dateTo`, `building`, `roomId`, `userId`, `status`, `q`, `sort`, `limit`, `offset`. Даты строгие, прошлые разрешены; границы периода включительные, каждая необязательна, начало не позже конца. q ищет полное имя пользователя ИЛИ полное название аудитории без учёта регистра, не комментарий. Пробелы по краям q удаляются, пустой q не фильтрует. Символы `%`, `_` и обратный слеш в обоих поисках буквальные. Все остальные условия применяются через AND.
-
-`sort=date` (по умолчанию) — дата/начало/ID по возрастанию; `-date` — по убыванию; `room` — название, затем дата/начало/ID по возрастанию. `limit` — 1–100, `offset` — целое >= 0, по умолчанию 0. Без limit возвращаются все записи после offset. Фильтрация и сортировка выполняются в БД до пагинации.
-
-`X-Total-Count` — все совпадения до пагинации, `X-Active-Count` — active среди них, без дополнительного ограничения по сегодняшней дате. На пустой странице счётчики могут быть ненулевыми; при status=cancelled активных 0. Если совпадений нет, массив пуст, оба счётчика 0.
-
-### Статистика
-
-`/admin/stats` принимает обязательные dateFrom/dateTo в `YYYY-MM-DD` включительно и необязательный building A–D. Только active; ёмкость = число аудиторий × 540 минут × число календарных дней. Процент = минуты / ёмкость × 100 без явного округления; при нулевой ёмкости — 0. Фильтр корпуса ограничивает все блоки.
-
-| Поле `Stats` | Содержимое |
-|---|---|
-| `totals` | `{bookings, minutes, percent}` |
-| `byBuilding[]` | `{building, rooms, minutes, percent}` |
-| `byDay[]` | `{date, bookings, minutes, percent}` |
-| `cells[]` | `{building, date, bookings, minutes, capacityMinutes, percent}` |
-| `byHalfHour` | 18 целых счётчиков покрытия слотов 09:00, 09:30 … 17:30 за весь период, конец брони исключён |
-| `topRooms[]` | До 10 `{roomId, name, minutes, bookings}`, по убыванию minutes, затем name и roomId |
-
-Пустые даты и корпуса сохраняются с нулями; без building — A–D, с ним — выбранный корпус. Рейтинг включает только аудитории с бронями. Используются текущие название и корпус аудитории.
-
-### Заголовки и ошибки
-
-Все ответы `/api` содержат `X-Server-Time` (UTC ISO 8601) и `X-Server-Utc-Offset` (смещение сервера в минутах). В ответах доступности те же значения есть в JSON: `serverTime`, `utcOffset`. Заголовки времени и счётчиков доступны браузеру через CORS.
-
-Ожидаемые ошибки имеют вид `{"code":"VALIDATION_ERROR","message":"Некорректные данные запроса","details":{"date":["Сообщение об ошибке"]}}`. Details зависит от ошибки: для валидации — массивы сообщений по полям, для конфликта — roomId/date/startTime/endTime.
-
-| HTTP | Код / причина |
-|---|---|
-| 400 | `VALIDATION_ERROR`: неверные поля, фильтры, интервал, повторное название аудитории |
-| 401 | `UNAUTHORIZED`: неверные учётные данные, отсутствующий/недействительный access либо refresh |
-| 403 | `FORBIDDEN`: чужая отмена, запрещённая роль на студенческом маршруте или неразрешённый origin auth-запроса |
-| 404 | `ROOM_NOT_FOUND`, `BOOKING_NOT_FOUND`; отдельно — пустой ответ на `/admin/*` до подтверждения JWT и актуальной роли admin |
-| 409 | `BOOKING_CONFLICT`, `ALREADY_CANCELLED`, `ROOM_HAS_BOOKINGS` |
-
-Пустой административный 404 и успешный 204 не содержат JSON. Повторная отмена не меняет историю. Отмена сохраняет запись и освобождает время.
+Заголовки времени: `X-Server-Time` (UTC), `X-Server-Utc-Offset` (минуты). Ошибки: `{code:string, message:string, details:object/null}`; возможные статусы — 400, 401, 403, 404, 409. Пустой административный 404 и успешный 204 не содержат JSON.
 
 ## Ограничения
 
