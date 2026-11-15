@@ -38,6 +38,7 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<RoomService>();
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<BookingService>();
+builder.Services.AddScoped<StatsService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
     .Configure<IOptions<JwtOptions>>((options, settings) =>
@@ -93,6 +94,7 @@ builder.Services.AddSwaggerGen(options =>
     options.OperationFilter<RoomSearchOperationFilter>();
     options.OperationFilter<AdminBookingsOperationFilter>();
     options.OperationFilter<MyBookingsOperationFilter>();
+    options.OperationFilter<StatsOperationFilter>();
     options.OperationFilter<AuthorizationOperationFilter>();
     options.OperationFilter<ServerTimeOperationFilter>();
     options.SchemaFilter<BookingRequestSchemaFilter>();

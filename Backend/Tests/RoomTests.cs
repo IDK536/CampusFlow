@@ -853,7 +853,8 @@ public sealed class RoomTests : IAsyncLifetime
         using var wrongMethod = await client.GetAsync("/api/admin/rooms");
         using var unknown = await client.GetAsync("/api/admin/missing");
         using var users = await client.GetAsync("/api/admin/users");
-        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown, users };
+        using var stats = await client.GetAsync("/api/admin/stats?dateFrom=bad&dateTo=2000-01-01&building=invalid");
+        var responses = new[] { list, cancellation, creation, update, deletion, invalidDeletion, malformed, wrongMethod, unknown, users, stats };
         var bodies = await Task.WhenAll(responses.Select(response => response.Content.ReadAsStringAsync()));
 
         Assert.All(responses, response => Assert.Equal(HttpStatusCode.NotFound, response.StatusCode));
