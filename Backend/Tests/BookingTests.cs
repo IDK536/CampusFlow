@@ -631,6 +631,7 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(adminCancellation.GetProperty("responses").TryGetProperty("409", out _));
         Assert.True(adminList.GetProperty("responses").TryGetProperty("404", out _));
         Assert.True(adminList.GetProperty("responses").GetProperty("200").GetProperty("headers").TryGetProperty("X-Total-Count", out _));
+        Assert.True(adminList.GetProperty("responses").GetProperty("200").GetProperty("headers").TryGetProperty("X-Active-Count", out _));
         Assert.All(adminList.GetProperty("parameters").EnumerateArray().Where(parameter => parameter.GetProperty("name").GetString() is "limit" or "offset"),
             parameter => Assert.Equal("integer", parameter.GetProperty("schema").GetProperty("type").GetString()));
         Assert.False(adminList.GetProperty("responses").TryGetProperty("401", out _));
@@ -855,7 +856,8 @@ public sealed class BookingTests : IAsyncLifetime
             .OrderBy(item => item.Date).ThenBy(item => item.StartTime).ThenBy(item => item.Id).Select(item => item.Id).ToArray();
         commands.BookingReads = 0;
 
-        var result = (await client.GetFromJsonAsync<BookingResponse[]>("/api/admin/bookings?" + filter))!;
+        using var response = await client.GetAsync("/api/admin/bookings?" + filter);
+        var result = (await response.Content.ReadFromJsonAsync<BookingResponse[]>())!;
         var ownRows = result.Where(item => item.RoomId == room.Id).ToArray();
         var reads = commands.BookingReads;
 
@@ -865,6 +867,8 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal(result.OrderBy(item => item.Date).ThenBy(item => item.StartTime).ThenBy(item => item.Id), result);
         if (expected.Length == 0)
             Assert.Empty(result);
+        if (filter.Contains("roomId=", StringComparison.Ordinal) || filter.Contains("userId=", StringComparison.Ordinal))
+            Assert.Equal(result.Count(item => item.Status == "active").ToString(CultureInfo.InvariantCulture), response.Headers.GetValues("X-Active-Count").Single());
         Assert.Equal(2, reads);
     }
 
@@ -923,6 +927,7 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("VALIDATION_ERROR", error!.Code);
         Assert.False(response.Headers.Contains("X-Total-Count"));
+        Assert.False(response.Headers.Contains("X-Active-Count"));
     }
 
     [Theory]
@@ -1051,6 +1056,8 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(expectedIds, result!.Select(item => item.Id));
         Assert.Equal(total.ToString(CultureInfo.InvariantCulture), response.Headers.GetValues("X-Total-Count").Single());
+        var expectedActive = total == 6 ? 5 : total;
+        Assert.Equal(expectedActive.ToString(CultureInfo.InvariantCulture), response.Headers.GetValues("X-Active-Count").Single());
         Assert.Equal(2, reads);
     }
 
@@ -1066,6 +1073,8 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("0", response.Headers.GetValues("X-Total-Count").Single());
         Assert.Contains("X-Total-Count", exposed);
+        Assert.Contains("X-Active-Count", exposed);
+        Assert.Equal("0", response.Headers.GetValues("X-Active-Count").Single());
     }
 
     [Theory]
@@ -1132,6 +1141,7 @@ public sealed class BookingTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(expectedIds, result!.Select(item => item.Id));
+        Assert.Equal(result!.Count(item => item.Status == "active").ToString(CultureInfo.InvariantCulture), response.Headers.GetValues("X-Active-Count").Single());
         Assert.Equal(2, reads);
     }
 

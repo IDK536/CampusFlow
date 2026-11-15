@@ -8,7 +8,7 @@ using Npgsql;
 
 namespace CampusFlow.Api.Services;
 
-public sealed record BookingListResult(BookingResponse[] Bookings, int TotalCount);
+public sealed record BookingListResult(BookingResponse[] Bookings, int TotalCount, int ActiveCount);
 
 public sealed record BookingCreationResult(BookingResponse? Booking, string? ErrorCode = null);
 
@@ -141,7 +141,12 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
                                   UserDisplayName = user.DisplayName, booking.Date, booking.StartTime,
                                   booking.EndTime, booking.Status, booking.Comment
                               };
-        var totalCount = includeTotalCount ? await joined.CountAsync(cancellationToken) : 0;
+        var counts = includeTotalCount
+            ? await joined.GroupBy(booking => 1).Select(group => new
+            {
+                TotalCount = group.Count(), ActiveCount = group.Count(booking => booking.Status == "active")
+            }).SingleOrDefaultAsync(cancellationToken)
+            : null;
         var sorted = filters.Sort switch
         {
             "-date" => joined.OrderByDescending(booking => booking.Date).ThenByDescending(booking => booking.StartTime).ThenByDescending(booking => booking.Id),
@@ -156,6 +161,6 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
             booking.UserId, booking.UserDisplayName, booking.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             booking.StartTime.ToString("HH:mm", CultureInfo.InvariantCulture), booking.EndTime.ToString("HH:mm", CultureInfo.InvariantCulture),
             booking.Status, booking.Comment)).ToArray();
-        return new BookingListResult(response, includeTotalCount ? totalCount : response.Length);
+        return new BookingListResult(response, includeTotalCount ? counts?.TotalCount ?? 0 : response.Length, counts?.ActiveCount ?? 0);
     }
 }

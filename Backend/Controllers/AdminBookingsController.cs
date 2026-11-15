@@ -25,6 +25,7 @@ public sealed class AdminBookingsController(BookingService bookings) : Controlle
         if (result is null)
             return NotFound();
         Response.Headers["X-Total-Count"] = result.TotalCount.ToString(CultureInfo.InvariantCulture);
+        Response.Headers["X-Active-Count"] = result.ActiveCount.ToString(CultureInfo.InvariantCulture);
         return Ok(result.Bookings);
     }
 

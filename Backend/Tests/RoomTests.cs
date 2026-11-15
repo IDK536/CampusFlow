@@ -131,6 +131,105 @@ public sealed class RoomTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("list", 1)]
+    [InlineData("availability", 2)]
+    [InlineData("card", 1)]
+    public async Task AdminRoomCountersIncludeTodayAndHistoryRegardlessOfSearchDate(string view, int expectedReads)
+    {
+        var today = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var emptyRoom = new Room { Name = suffix + "_counts_empty", Building = "A", Floor = 1, Capacity = 10, Equipment = [] };
+        await using var db = CreateDbContext();
+        db.Rooms.Add(emptyRoom);
+        db.Bookings.AddRange(
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today, StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(1), StartTime = new(17, 0), EndTime = new(18, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(14), StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today.AddDays(-1), StartTime = new(11, 0), EndTime = new(12, 0) },
+            new Booking { RoomId = rooms[1].Id, UserId = user.Id, Date = today, StartTime = new(10, 0), EndTime = new(11, 0), Status = "cancelled" },
+            new Booking { RoomId = rooms[3].Id, UserId = user.Id, Date = today.AddDays(-1), StartTime = new(9, 0), EndTime = new(10, 0), Status = "cancelled" });
+        await db.SaveChangesAsync();
+        await LoginAsAdminAsync();
+        clock.SetLocal(today.ToDateTime(new TimeOnly(18, 30)));
+        var path = view switch
+        {
+            "card" => $"/api/rooms/{rooms[1].Id}",
+            "availability" => $"/api/rooms?date={today.AddDays(4):yyyy-MM-dd}&building=A",
+            _ => "/api/rooms?building=A"
+        };
+        counter.Reads = 0;
+
+        using var response = await client.GetAsync(path);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var returned = view == "card" ? new[] { body.RootElement }
+            : (view == "availability" ? body.RootElement.GetProperty("rooms") : body.RootElement).EnumerateArray().ToArray();
+        var reads = counter.Reads;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var room = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == rooms[1].Id);
+        Assert.Equal(3, room.GetProperty("activeBookings").GetInt32());
+        Assert.True(room.GetProperty("hasBookings").GetBoolean());
+        if (view != "card")
+        {
+            var historyOnly = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == rooms[3].Id);
+            var empty = Assert.Single(returned, item => item.GetProperty("id").GetInt32() == emptyRoom.Id);
+            Assert.Equal(0, historyOnly.GetProperty("activeBookings").GetInt32());
+            Assert.True(historyOnly.GetProperty("hasBookings").GetBoolean());
+            Assert.Equal(0, empty.GetProperty("activeBookings").GetInt32());
+            Assert.False(empty.GetProperty("hasBookings").GetBoolean());
+        }
+        Assert.Equal(expectedReads, reads);
+    }
+
+    [Theory]
+    [InlineData("student", false)]
+    [InlineData("confirmed", true)]
+    [InlineData("role_changed", false)]
+    [InlineData("promoted", false)]
+    [InlineData("deleted", false)]
+    public async Task RoomCountersRequireBothAdminJwtAndCurrentDatabaseRole(string state, bool includeCounters)
+    {
+        if (state is "confirmed" or "role_changed" or "deleted")
+            await LoginAsAdminAsync();
+        await using var db = CreateDbContext();
+        if (state == "role_changed")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "student"));
+        if (state == "promoted")
+            await db.Users.Where(item => item.Id == user.Id).ExecuteUpdateAsync(update => update.SetProperty(item => item.Role, "admin"));
+        if (state == "deleted")
+        {
+            await db.RefreshTokens.Where(item => item.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Bookings.Where(item => item.UserId == user.Id).ExecuteDeleteAsync();
+            await db.Users.Where(item => item.Id == user.Id).ExecuteDeleteAsync();
+        }
+        var paths = new[] { "/api/rooms", $"/api/rooms?date={DateText}", $"/api/rooms/{rooms[1].Id}" };
+        var results = new List<(HttpStatusCode Status, bool Active, bool Has, string[] Fields)>();
+
+        foreach (var path in paths)
+        {
+            using var response = await client.GetAsync(path);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var room = path.Contains("?date=") ? body.RootElement.GetProperty("rooms").EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == rooms[1].Id)
+                : body.RootElement.ValueKind == JsonValueKind.Array ? body.RootElement.EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == rooms[1].Id)
+                : body.RootElement;
+            results.Add((response.StatusCode, room.TryGetProperty("activeBookings", out _), room.TryGetProperty("hasBookings", out _),
+                room.EnumerateObject().Select(item => item.Name).Order().ToArray()));
+        }
+
+        Assert.All(results, result =>
+        {
+            Assert.Equal(HttpStatusCode.OK, result.Status);
+            Assert.Equal(includeCounters, result.Active);
+            Assert.Equal(includeCounters, result.Has);
+        });
+        if (!includeCounters)
+        {
+            Assert.Equal(new[] { "building", "capacity", "equipment", "floor", "id", "name" }, results[0].Fields);
+            Assert.Equal(new[] { "building", "capacity", "equipment", "floor", "freeSlots", "id", "name" }, results[1].Fields);
+            Assert.Equal(results[0].Fields, results[2].Fields);
+        }
+    }
+
+    [Theory]
     [InlineData("?floor=2", 1)]
     [InlineData("?floor=1&building=A&minCapacity=30&equipment=projector", 0)]
     [InlineData("?building=A", 0, 1, 3)]
@@ -860,6 +959,7 @@ public sealed class RoomTests : IAsyncLifetime
         Assert.All(responses, response => Assert.Equal(HttpStatusCode.NotFound, response.StatusCode));
         Assert.All(responses, response => Assert.Empty(response.Headers.WwwAuthenticate));
         Assert.All(responses, response => Assert.False(response.Headers.Contains("X-Total-Count")));
+        Assert.All(responses, response => Assert.False(response.Headers.Contains("X-Active-Count")));
         Assert.All(bodies, body => Assert.Empty(body));
         Assert.False(await db.Rooms.AnyAsync(room => room.Name == suffix + "_created"));
         Assert.True(await db.Rooms.AnyAsync(room => room.Id == rooms[1].Id));
@@ -913,8 +1013,9 @@ public sealed class RoomTests : IAsyncLifetime
 
     private sealed class TestClock : TimeProvider
     {
-        private readonly DateTimeOffset now = DateTimeOffset.UtcNow;
+        private DateTimeOffset now = DateTimeOffset.UtcNow;
         public override DateTimeOffset GetUtcNow() => now;
+        public void SetLocal(DateTime local) => now = new DateTimeOffset(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), LocalTimeZone.BaseUtcOffset).ToUniversalTime();
         public override TimeZoneInfo LocalTimeZone { get; } = TimeZoneInfo.CreateCustomTimeZone("RoomTests", TimeSpan.FromMinutes(330), "RoomTests", "RoomTests");
     }
 

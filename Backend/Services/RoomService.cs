@@ -9,7 +9,7 @@ namespace CampusFlow.Api.Services;
 
 public sealed record RoomWriteResult(RoomResponse? Room, string? ErrorCode = null);
 
-public sealed class RoomService(CampusFlowDbContext db)
+public sealed class RoomService(CampusFlowDbContext db, TimeProvider clock)
 {
     public async Task<string?> DeleteAsync(int id, CancellationToken cancellationToken)
     {
@@ -54,8 +54,9 @@ public sealed class RoomService(CampusFlowDbContext db)
         return new(new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment));
     }
 
-    public async Task<RoomResponse[]> GetRoomsAsync(RoomSearchQuery filter, CancellationToken cancellationToken)
+    public async Task<RoomResponse[]> GetRoomsAsync(RoomSearchQuery filter, CancellationToken cancellationToken, bool includeBookingCounts = false)
     {
+        var today = includeBookingCounts ? DateOnly.FromDateTime(clock.GetLocalNow().DateTime) : default;
         var query = db.Rooms.AsNoTracking();
         if (!string.IsNullOrWhiteSpace(filter.Q))
         {
@@ -78,14 +79,21 @@ public sealed class RoomService(CampusFlowDbContext db)
         if (equipment.Length > 0)
             query = query.Where(room => equipment.All(item => room.Equipment.Contains(item)));
         return await query.OrderBy(room => room.Id)
-            .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment))
+            .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment,
+                includeBookingCounts ? db.Bookings.Count(booking => booking.RoomId == room.Id && booking.Status == "active" && booking.Date >= today) : (int?)null,
+                includeBookingCounts ? db.Bookings.Any(booking => booking.RoomId == room.Id) : (bool?)null))
             .ToArrayAsync(cancellationToken);
     }
 
-    public Task<RoomResponse?> GetRoomAsync(int id, CancellationToken cancellationToken) => db.Rooms.AsNoTracking()
-        .Where(room => room.Id == id)
-        .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment))
-        .SingleOrDefaultAsync(cancellationToken);
+    public Task<RoomResponse?> GetRoomAsync(int id, CancellationToken cancellationToken, bool includeBookingCounts = false)
+    {
+        var today = includeBookingCounts ? DateOnly.FromDateTime(clock.GetLocalNow().DateTime) : default;
+        return db.Rooms.AsNoTracking().Where(room => room.Id == id)
+            .Select(room => new RoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment,
+                includeBookingCounts ? db.Bookings.Count(booking => booking.RoomId == room.Id && booking.Status == "active" && booking.Date >= today) : (int?)null,
+                includeBookingCounts ? db.Bookings.Any(booking => booking.RoomId == room.Id) : (bool?)null))
+            .SingleOrDefaultAsync(cancellationToken);
+    }
 
     public async Task<AvailableRoomsResponse> GetAvailabilityAsync(RoomResponse[] rooms, string dateText,
         string? startTime, string? endTime, int? minDuration, DateTime serverTime, int utcOffset, CancellationToken cancellationToken)
@@ -118,7 +126,7 @@ public sealed class RoomService(CampusFlowDbContext db)
                 continue;
             var slots = free.Select(slot => new FreeSlotResponse(slot.Start.ToString("HH:mm", CultureInfo.InvariantCulture),
                 slot.End.ToString("HH:mm", CultureInfo.InvariantCulture))).ToArray();
-            result.Add(new AvailableRoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment, slots));
+            result.Add(new AvailableRoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment, slots, room.ActiveBookings, room.HasBookings));
         }
         return new AvailableRoomsResponse(dateText, result.ToArray(), serverTime, utcOffset);
     }

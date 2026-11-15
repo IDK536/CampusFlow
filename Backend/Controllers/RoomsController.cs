@@ -1,3 +1,4 @@
+using CampusFlow.Api.Configuration;
 using System.Globalization;
 using CampusFlow.Api.Middleware;
 using CampusFlow.Api.Contracts;
@@ -13,13 +14,13 @@ namespace CampusFlow.Api.Controllers;
 [ProducesResponseType<ApiError>(400)]
 [ProducesResponseType<ApiError>(401)]
 [ProducesResponseType<ApiError>(403)]
-public sealed class RoomsController(RoomService rooms) : ControllerBase
+public sealed class RoomsController(RoomService rooms, IAuthorizationService authorization) : ControllerBase
 {
     [HttpGet]
     [ProducesResponseType<RoomResponse[]>(200)]
     public async Task<IActionResult> Search([FromQuery] RoomSearchQuery query, CancellationToken cancellationToken)
     {
-        var found = await rooms.GetRoomsAsync(query, cancellationToken);
+        var found = await rooms.GetRoomsAsync(query, cancellationToken, await IncludeBookingCountsAsync());
         if (query.Date is null)
             return Ok(found);
         var time = (ServerTimeSnapshot)HttpContext.Items[typeof(ServerTimeSnapshot)]!;
@@ -33,7 +34,7 @@ public sealed class RoomsController(RoomService rooms) : ControllerBase
     [ProducesResponseType<ApiError>(404)]
     public async Task<IActionResult> GetById(int id, CancellationToken cancellationToken)
     {
-        var room = await rooms.GetRoomAsync(id, cancellationToken);
+        var room = await rooms.GetRoomAsync(id, cancellationToken, await IncludeBookingCountsAsync());
         if (room is null)
             return NotFound(new ApiError("ROOM_NOT_FOUND", "Аудитория не найдена", new { roomId = id }));
         return Ok(room);
@@ -52,4 +53,7 @@ public sealed class RoomsController(RoomService rooms) : ControllerBase
             time.ServerTime, time.UtcOffset, cancellationToken);
         return Ok(new RoomFreeSlotsResponse(id, result.Date, result.Rooms[0].FreeSlots, time.ServerTime, time.UtcOffset));
     }
+
+    private async Task<bool> IncludeBookingCountsAsync() => User.IsInRole("admin")
+        && (await authorization.AuthorizeAsync(User, HttpContext, AdminAccessRequirement.Policy)).Succeeded;
 }

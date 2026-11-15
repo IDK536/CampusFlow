@@ -6,10 +6,14 @@ using System.Text.Json.Serialization;
 
 namespace CampusFlow.Api.Contracts;
 
-public sealed record RoomResponse(int Id, string Name, string Building, int Floor, int Capacity, string[] Equipment);
+public sealed record RoomResponse(int Id, string Name, string Building, int Floor, int Capacity, string[] Equipment,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ActiveBookings = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? HasBookings = null);
 public sealed record FreeSlotResponse(string StartTime, string EndTime);
 public sealed record AvailableRoomResponse(int Id, string Name, string Building, int Floor, int Capacity,
-    string[] Equipment, FreeSlotResponse[] FreeSlots);
+    string[] Equipment, FreeSlotResponse[] FreeSlots,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ActiveBookings = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? HasBookings = null);
 public sealed record AvailableRoomsResponse(string Date, AvailableRoomResponse[] Rooms, DateTime ServerTime, int UtcOffset);
 public sealed record RoomFreeSlotsResponse(int RoomId, string Date, FreeSlotResponse[] FreeSlots, DateTime ServerTime, int UtcOffset);
 
