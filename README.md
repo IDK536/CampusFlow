@@ -1,5 +1,9 @@
 # CampusFlow
 
-Сервис бронирования аудиторий на ASP.NET Core и PostgreSQL.
+Сервис бронирования аудиторий (кейс хакатона IBS).
 
-Исходный код API и тесты находятся в `Backend/`. Документация API доступна в Swagger по адресу `/swagger`.
+- Frontend: [client/README.md](client/README.md) — запуск, пользователи, сценарии демо, API.
+- Docker: `docker compose up --build` → http://localhost:3000
+
+Документация API доступна в Swagger по адресу `/swagger`.
+Бэкенд, тесты и инструкция запуска: [Backend](Backend/README.md).

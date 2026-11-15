@@ -1,0 +1,366 @@
+@use '../variables' as *;
+
+.project-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--header-border);
+  color: $on-accent;
+
+  &__inner {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    min-height: 64px;
+
+    @media (max-width: 900px) and (min-width: 481px) {
+      gap: 16px;
+    }
+
+    @include below(480px) {
+      flex-wrap: wrap;
+      gap: 0 16px;
+      min-height: 0;
+      padding-top: 10px;
+    }
+  }
+
+  &__logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 19px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    text-decoration: none;
+  }
+
+  &__mark {
+    position: relative;
+    width: 26px;
+    height: 26px;
+
+    span {
+      position: absolute;
+      width: 13px;
+      height: 13px;
+      background: $lime;
+
+      &:first-child {
+        top: 0;
+        left: 0;
+      }
+
+      &:last-child {
+        right: 0;
+        bottom: 0;
+        border-radius: 0 0 13px 0;
+        background: $lilac;
+      }
+    }
+
+    &::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: 0;
+      width: 13px;
+      height: 13px;
+      border-radius: 0 13px 0 0;
+      background: $on-accent;
+    }
+  }
+
+  &__nav {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+    position: relative;
+    min-width: 0;
+
+    // Планшет: навигация в одной строке с логотипом, ссылки плотнее.
+    @include below(900px) {
+      gap: 0;
+
+      .project-header__link {
+        padding: 0 10px;
+      }
+    }
+
+    @include below(480px) {
+      order: 3;
+      flex-basis: 100%;
+      overflow-x: auto;
+      margin: 8px -16px 0;
+      padding: 0 16px;
+      scrollbar-width: none;
+    }
+  }
+
+  &__link {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    height: 64px;
+    padding: 0 12px;
+    color: rgba(255, 255, 255, 0.75);
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: color 0.15s;
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 0;
+      height: 4px;
+      border-radius: 4px 4px 0 0;
+      background: $lime;
+      transform: scaleY(0);
+      transform-origin: bottom;
+      transition: transform 0.2s $ease;
+    }
+
+    &:hover {
+      color: $on-accent;
+    }
+
+    &.is-active {
+      color: $on-accent;
+
+      &::after {
+        transform: scaleY(1);
+      }
+    }
+
+    @include below(480px) {
+      height: 44px;
+    }
+  }
+
+  &__theme {
+    margin-left: auto;
+
+    // На шапке переключатель полупрозрачный — подходит и к фиолетовой, и к чёрной.
+    .theme-switcher--compact {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .theme-switcher__item {
+      color: rgba(255, 255, 255, 0.7);
+
+      &:hover:not(.is-active) {
+        background: rgba(255, 255, 255, 0.12);
+        color: $on-accent;
+      }
+
+      &.is-active {
+        background: $on-accent;
+        color: #2b1aa6;
+        box-shadow: none;
+      }
+    }
+
+    @include below(640px) {
+      display: none;
+    }
+  }
+
+  &__user {
+    position: relative;
+    margin-left: auto;
+
+    @include below(640px) {
+      margin-left: auto;
+    }
+  }
+
+  &__user-button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 6px 6px;
+    border-radius: $radius;
+    color: $on-accent;
+    text-align: left;
+    transition: background-color 0.15s;
+
+    &:hover,
+    &[aria-expanded='true'] {
+      background: rgba(255, 255, 255, 0.12);
+    }
+  }
+
+  &__user-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+
+    @include below(900px) {
+      display: none;
+    }
+  }
+
+  &__user-name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  &__user-role {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+  }
+}
+
+.user-menu {
+  position: absolute;
+  z-index: 10;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 290px;
+  padding: 8px;
+  border-radius: $leaf;
+  background: $surface;
+  color: $ink;
+  box-shadow: $shadow-lg;
+  animation: dialogIn 0.2s $ease both;
+
+  &__caption {
+    padding: 6px 10px;
+    color: $faint;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: $radius-sm;
+    text-align: left;
+
+    &:hover {
+      background: $violet-50;
+    }
+
+    > span:nth-child(2) {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+
+    &--plain {
+      color: $ink-2;
+      font-weight: 500;
+      font-size: 14px;
+    }
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  &__hint {
+    color: $muted;
+    font-size: 12px;
+  }
+
+  &__theme {
+    padding: 4px 6px 6px;
+  }
+
+  &__divider {
+    height: 1px;
+    margin: 6px 0;
+    background: $line;
+  }
+}
+
+// Невидимая копия ссылок — только для замера ширины.
+.project-header__measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+
+// Нижняя панель вкладок — когда разделы не помещаются в шапку.
+.tab-bar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 40;
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+  max-width: 560px;
+  min-width: 296px;
+  margin: 0 auto;
+  padding: 6px;
+  border: 1px solid $line-2;
+  border-radius: 22px;
+  background: $surface;
+  box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.12);
+
+  &__item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    padding: 7px 2px 6px;
+    border-radius: 16px;
+    color: $muted;
+    font-size: 11px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
+
+    span {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    &:hover {
+      color: $ink;
+    }
+
+    &.is-active {
+      background: $violet;
+      color: $on-accent;
+    }
+
+    // На самых узких экранах — только иконки, подпись в title и aria-label.
+    @media (max-width: 359px) {
+      padding: 11px 2px;
+
+      span {
+        display: none;
+      }
+    }
+  }
+}
+
+body.has-tab-bar {
+  padding-bottom: 92px;
+
+  .toast-stack {
+    bottom: 96px;
+  }
+}
