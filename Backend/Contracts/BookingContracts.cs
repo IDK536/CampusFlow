@@ -66,6 +66,14 @@ public sealed class AdminBookingsQuery : IValidatableObject
     [DisplayFormat(ConvertEmptyStringToNull = false)]
     public string? Date { get; init; }
 
+    [FromQuery(Name = "dateFrom")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? DateFrom { get; init; }
+
+    [FromQuery(Name = "dateTo")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? DateTo { get; init; }
+
     [FromQuery(Name = "roomId")]
     [Range(1, int.MaxValue)]
     public int? RoomId { get; init; }
@@ -80,8 +88,14 @@ public sealed class AdminBookingsQuery : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (Date is not null && !DateOnly.TryParseExact(Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
-            yield return new ValidationResult("Дата должна иметь формат YYYY-MM-DD", [nameof(Date)]);
+        foreach (var field in new[] { (Name: nameof(Date), Value: Date), (Name: nameof(DateFrom), Value: DateFrom), (Name: nameof(DateTo), Value: DateTo) })
+        {
+            if (field.Value is not null && !DateOnly.TryParseExact(field.Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                yield return new ValidationResult("Дата должна иметь формат YYYY-MM-DD", [field.Name]);
+        }
+        if (DateOnly.TryParseExact(DateFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var from)
+            && DateOnly.TryParseExact(DateTo, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var to) && from > to)
+            yield return new ValidationResult("Начало периода не должно быть позже конца", [nameof(DateFrom), nameof(DateTo)]);
         if (Status is not null && Status is not ("active" or "cancelled"))
             yield return new ValidationResult("Статус должен быть active или cancelled", [nameof(Status)]);
     }

@@ -58,7 +58,7 @@ dotnet publish CampusFlow.Api.csproj -c Release
 
 Login, refresh и logout находятся в /api/auth. Access JWT передаётся как Bearer, refresh — только в HttpOnly-cookie. По умолчанию access действует 60 минут, refresh — 7 дней от входа без продления. Обновления внутри одной вкладки объединяются; межвкладочная синхронизация и grace-окно в текущий MVP не входят.
 
-Поиск: GET /api/rooms с building, minCapacity, equipment, date, startTime, endTime. Без даты возвращается массив Room, с датой — {date, rooms} с freeSlots. Административный список поддерживает date, roomId, userId, status; диапазона дат нет.
+Поиск: GET /api/rooms с building, minCapacity, equipment, date, startTime, endTime. Без даты возвращается массив Room, с датой — {date, rooms} с freeSlots. Административный список поддерживает date, dateFrom, dateTo, roomId, userId, status. Границы периода включительные, каждая необязательна; прошлые даты разрешены. Формат YYYY-MM-DD, начало позже конца даёт 400. Все фильтры объединяются через AND; date сохраняет выбор одного дня.
 
 Создание брони доступно только student, владелец определяется из JWT. Интервалы внутри 09:00–18:00 с шагом 30 минут, дата YYYY-MM-DD и время HH:mm, прошедшее начало запрещено. Смежные интервалы допустимы. Пересечение активных броней даёт 409 BOOKING_CONFLICT. Отмена сохраняет историю и освобождает интервал.
 

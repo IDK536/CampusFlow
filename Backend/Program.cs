@@ -83,6 +83,7 @@ builder.Services.AddSwaggerGen(options =>
         Type = SecuritySchemeType.Http, Scheme = "bearer", BearerFormat = "JWT"
     });
     options.OperationFilter<RoomSearchOperationFilter>();
+    options.OperationFilter<AdminBookingsOperationFilter>();
     options.OperationFilter<AuthorizationOperationFilter>();
     options.SchemaFilter<BookingRequestSchemaFilter>();
 });

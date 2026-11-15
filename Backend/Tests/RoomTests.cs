@@ -683,7 +683,7 @@ public sealed class RoomTests : IAsyncLifetime
         }
         client.DefaultRequestHeaders.Add("role", "admin");
 
-        using var list = await client.GetAsync("/api/admin/bookings?date=bad");
+        using var list = await client.GetAsync("/api/admin/bookings?dateFrom=bad&dateTo=2000-01-01");
         using var cancellation = await client.DeleteAsync("/api/admin/bookings/text");
         using var creation = await client.PostAsJsonAsync("/api/admin/rooms", new { role = "admin", floor = "bad" });
         using var update = await client.PutAsJsonAsync("/api/admin/rooms/text", new { role = "admin" });

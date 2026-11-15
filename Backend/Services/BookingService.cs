@@ -103,6 +103,16 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
             var date = DateOnly.ParseExact(filters.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture);
             query = query.Where(booking => booking.Date == date);
         }
+        if (filters.DateFrom is not null)
+        {
+            var from = DateOnly.ParseExact(filters.DateFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            query = query.Where(booking => booking.Date >= from);
+        }
+        if (filters.DateTo is not null)
+        {
+            var to = DateOnly.ParseExact(filters.DateTo, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            query = query.Where(booking => booking.Date <= to);
+        }
         var status = filters.Status;
         if (status is not null)
             query = query.Where(booking => booking.Status == status);
