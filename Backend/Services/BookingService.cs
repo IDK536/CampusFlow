@@ -79,11 +79,11 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
             request.Date!, request.StartTime!, request.EndTime!, booking.Status, booking.Comment));
     }
 
-    public async Task<BookingResponse[]?> GetMineAsync(int userId, string? status, CancellationToken cancellationToken)
+    public async Task<BookingResponse[]?> GetMineAsync(int userId, MyBookingsQuery filters, CancellationToken cancellationToken)
     {
         if (!await db.Users.AnyAsync(user => user.Id == userId, cancellationToken))
             return null;
-        var result = await ReadAsync(new AdminBookingsQuery { UserId = userId, Status = status }, cancellationToken);
+        var result = await ReadAsync(new AdminBookingsQuery { UserId = userId, Status = filters.Status }, cancellationToken, scope: filters.Scope);
         return result.Bookings;
     }
 
@@ -94,9 +94,18 @@ public sealed class BookingService(CampusFlowDbContext db, TimeProvider clock)
         return await ReadAsync(filters, cancellationToken, includeTotalCount: true);
     }
 
-    private async Task<BookingListResult> ReadAsync(AdminBookingsQuery filters, CancellationToken cancellationToken, bool includeTotalCount = false)
+    private async Task<BookingListResult> ReadAsync(AdminBookingsQuery filters, CancellationToken cancellationToken, bool includeTotalCount = false, string? scope = null)
     {
         var query = db.Bookings.AsNoTracking();
+        if (scope is not null)
+        {
+            var now = clock.GetLocalNow();
+            var today = DateOnly.FromDateTime(now.DateTime);
+            var time = TimeOnly.FromDateTime(now.DateTime);
+            query = scope == "upcoming"
+                ? query.Where(booking => booking.Status == "active" && (booking.Date > today || booking.Date == today && booking.EndTime > time))
+                : query.Where(booking => booking.Date < today || booking.Date == today && booking.EndTime <= time);
+        }
         if (filters.UserId is not null)
             query = query.Where(booking => booking.UserId == filters.UserId);
         if (filters.RoomId is not null)

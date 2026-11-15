@@ -506,6 +506,88 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.Equal("VALIDATION_ERROR", error!.Code);
     }
 
+    [Theory]
+    [InlineData("", "0,1,2,3,4,5,6,7")]
+    [InlineData("scope=upcoming", "3,5")]
+    [InlineData("scope=past", "0,1,2,6,7")]
+    [InlineData("scope=upcoming&status=active", "3,5")]
+    [InlineData("scope=upcoming&status=cancelled", "")]
+    [InlineData("scope=past&status=active", "0,1,2")]
+    [InlineData("scope=past&status=cancelled", "6,7")]
+    [InlineData("status=cancelled", "4,6,7")]
+    public async Task PersonalScopeUsesEndTimeAndCombinesStatusWithoutChangingBookings(string filter, string expected)
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var other = await AddUserAsync();
+        clock.SetLocal(today.ToDateTime(new TimeOnly(12, 0)));
+        var rows = new[]
+        {
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today.AddDays(-1), StartTime = new(14, 0), EndTime = new(15, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today, StartTime = new(10, 0), EndTime = new(11, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today, StartTime = new(11, 0), EndTime = new(12, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today, StartTime = new(12, 0), EndTime = new(13, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today.AddDays(1), StartTime = new(13, 0), EndTime = new(14, 0), Status = "cancelled" },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today.AddDays(1), StartTime = new(9, 0), EndTime = new(10, 0) },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today.AddDays(-1), StartTime = new(10, 0), EndTime = new(11, 0), Status = "cancelled" },
+            new Booking { UserId = user.Id, RoomId = room.Id, Date = today, StartTime = new(11, 0), EndTime = new(12, 0), Status = "cancelled" },
+            new Booking { UserId = other.Id, RoomId = room.Id, Date = today, StartTime = new(14, 0), EndTime = new(15, 0) }
+        };
+        await using var db = CreateDbContext();
+        db.Bookings.AddRange(rows);
+        await db.SaveChangesAsync();
+        var expectedIds = expected.Length == 0 ? [] : expected.Split(',').Select(index => rows[int.Parse(index)])
+            .OrderBy(item => item.Date).ThenBy(item => item.StartTime).ThenBy(item => item.Id).Select(item => item.Id).ToArray();
+        var ids = rows.Select(item => item.Id).ToArray();
+        commands.BookingReads = 0;
+
+        using var response = await client.GetAsync("/api/bookings/my?" + filter);
+        var result = (await response.Content.ReadFromJsonAsync<BookingResponse[]>())!;
+        var reads = commands.BookingReads;
+        var statuses = await db.Bookings.AsNoTracking().Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id, item => item.Status);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expectedIds, result!.Select(item => item.Id));
+        Assert.All(result, item => Assert.Equal(user.Id, item.UserId));
+        Assert.All(rows, item => Assert.Equal(item.Status, statuses[item.Id]));
+        Assert.Equal(1, reads);
+    }
+
+    [Theory]
+    [InlineData(-1, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    public async Task PersonalScopeChangesAtExactEndIncludingSeconds(int seconds, bool past)
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var booking = new Booking { UserId = user.Id, RoomId = room.Id, Date = today, StartTime = new(11, 0), EndTime = new(12, 0) };
+        await using var db = CreateDbContext();
+        db.Bookings.Add(booking);
+        await db.SaveChangesAsync();
+        clock.SetLocal(today.ToDateTime(new TimeOnly(12, 0)).AddSeconds(seconds));
+
+        var upcoming = await client.GetFromJsonAsync<BookingResponse[]>("/api/bookings/my?scope=upcoming");
+        var history = await client.GetFromJsonAsync<BookingResponse[]>("/api/bookings/my?scope=past");
+
+        Assert.Equal(!past, upcoming!.Any(item => item.Id == booking.Id));
+        Assert.Equal(past, history!.Any(item => item.Id == booking.Id));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("unknown")]
+    [InlineData("Upcoming")]
+    [InlineData(" past ")]
+    public async Task InvalidScopeReturnsValidationError(string scope)
+    {
+        var path = "/api/bookings/my?scope=" + Uri.EscapeDataString(scope);
+
+        using var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+    }
+
     [Fact]
     public async Task PersonalListWithoutBookingsReturnsEmptyArray()
     {
@@ -533,6 +615,9 @@ public sealed class BookingTests : IAsyncLifetime
         Assert.True(creation.GetProperty("responses").TryGetProperty("409", out _));
         Assert.True(creation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(mine.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.Equal(new[] { "scope", "status" }, mine.GetProperty("parameters").EnumerateArray()
+            .Select(parameter => parameter.GetProperty("name").GetString()).Order().ToArray());
+        Assert.Contains("scope=upcoming", mine.GetProperty("description").GetString());
         Assert.True(cancellation.GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.True(cancellation.GetProperty("responses").TryGetProperty("200", out _));
         Assert.True(cancellation.GetProperty("responses").TryGetProperty("409", out _));

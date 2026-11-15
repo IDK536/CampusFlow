@@ -64,7 +64,7 @@ public sealed class BookingsController(BookingService bookings) : ControllerBase
     {
         if (!int.TryParse(User.FindFirstValue("sub"), NumberStyles.None, CultureInfo.InvariantCulture, out var userId) || userId <= 0)
             return Unauthorized(new ApiError("UNAUTHORIZED", "Требуется авторизация"));
-        var result = await bookings.GetMineAsync(userId, query.Status, cancellationToken);
+        var result = await bookings.GetMineAsync(userId, query, cancellationToken);
         if (result is null)
             return Unauthorized(new ApiError("UNAUTHORIZED", "Требуется повторный вход"));
         return Ok(result);

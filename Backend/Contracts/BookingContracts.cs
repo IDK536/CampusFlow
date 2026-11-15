@@ -44,12 +44,18 @@ public sealed class CreateBookingRequest : IValidatableObject
 
 public sealed class MyBookingsQuery : IValidatableObject
 {
+    [FromQuery(Name = "scope")]
+    [DisplayFormat(ConvertEmptyStringToNull = false)]
+    public string? Scope { get; init; }
+
     [FromQuery(Name = "status")]
     [DisplayFormat(ConvertEmptyStringToNull = false)]
     public string? Status { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (Scope is not null && Scope is not ("upcoming" or "past"))
+            yield return new ValidationResult("Период должен быть upcoming или past", [nameof(Scope)]);
         if (Status is not null && Status is not ("active" or "cancelled"))
             yield return new ValidationResult("Статус должен быть active или cancelled", [nameof(Status)]);
     }

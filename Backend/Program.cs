@@ -92,6 +92,7 @@ builder.Services.AddSwaggerGen(options =>
     });
     options.OperationFilter<RoomSearchOperationFilter>();
     options.OperationFilter<AdminBookingsOperationFilter>();
+    options.OperationFilter<MyBookingsOperationFilter>();
     options.OperationFilter<AuthorizationOperationFilter>();
     options.OperationFilter<ServerTimeOperationFilter>();
     options.SchemaFilter<BookingRequestSchemaFilter>();
