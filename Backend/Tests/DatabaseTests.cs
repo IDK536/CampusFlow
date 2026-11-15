@@ -94,17 +94,21 @@ public sealed class DatabaseTests : IAsyncLifetime
         await db.SaveChangesAsync();
         await DatabaseSeeder.SeedAsync(db, clock);
 
+        var adminId = await db.Users.Where(user => user.Login == "admin").Select(user => user.Id).SingleAsync();
+        var adminBookingCount = await db.Bookings.CountAsync(item => item.UserId == adminId);
+
         Assert.Equal(3, initialUserCount);
         Assert.Equal(12, initialRoomCount);
-        Assert.Equal(7, initialBookingCount);
-        Assert.Equal(7, repeatedBookingCount);
+        Assert.Equal(6, initialBookingCount);
+        Assert.Equal(6, repeatedBookingCount);
+        Assert.Equal(0, adminBookingCount);
         Assert.Equal("cancelled", cancelledStatus);
         foreach (var user in seededUsers)
             Assert.NotEqual(PasswordVerificationResult.Failed, new PasswordHasher<User>().VerifyHashedPassword(user, user.PasswordHash, user.Login));
         Assert.Equal(DateOnly.FromDateTime(clock.GetLocalNow().DateTime), cancelledDate);
         Assert.Equal(3, await db.Users.CountAsync(user => seedLogins.Contains(user.Login)));
         Assert.Equal(12, await db.Rooms.CountAsync(room => seedRooms.Contains(room.Name)));
-        Assert.Equal(7, await bookings.CountAsync());
+        Assert.Equal(6, await bookings.CountAsync());
         Assert.True(await db.Users.AnyAsync(user => user.Id == other.User.Id));
         Assert.True(await db.Rooms.AnyAsync(room => room.Id == other.Room.Id));
     }
