@@ -1,0 +1,77 @@
+name: CI
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: Detect projects
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.projects.outputs.backend }}
+      frontend: ${{ steps.projects.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: projects
+        run: |
+          if [[ -f CampusFlow.slnx ]]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -f client/package.json ]]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  backend:
+    name: backend
+    needs: detect
+    if: needs.detect.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: campusflow_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: campusflow_ci
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d campusflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore CampusFlow.slnx
+      - run: dotnet build CampusFlow.slnx --configuration Release --no-restore
+      - run: dotnet test CampusFlow.slnx --configuration Release --no-build -- xUnit.ParallelizeTestCollections=false
+        env:
+          CAMPUSFLOW_TEST_CONNECTION: Host=127.0.0.1;Port=${{ job.services.postgres.ports['5432'] }};Database=campusflow_test;Username=postgres;Password=campusflow_ci
+          Jwt__Key: campusflow-ci-test-signing-key-only
+          Jwt__Issuer: CampusFlow
+          Jwt__Audience: CampusFlowClient
+
+  frontend:
+    name: frontend
+    needs: detect
+    if: needs.detect.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run lint -- src vite.config.ts
+      - run: npm test
+      - run: npm run build
