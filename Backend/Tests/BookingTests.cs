@@ -224,6 +224,42 @@ public sealed class BookingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AfterClosingTodayCannotBeBookedWhileTomorrowCan()
+    {
+        var today = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
+        var tomorrow = today.AddDays(1);
+        var todayText = today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var tomorrowText = tomorrow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        clock.SetLocal(today.ToDateTime(new TimeOnly(21, 0)));
+        var todayRequest = Request();
+        todayRequest["date"] = todayText;
+        var tomorrowRequest = Request();
+        tomorrowRequest["date"] = tomorrowText;
+
+        var todaySlots = await client.GetFromJsonAsync<RoomFreeSlotsResponse>($"/api/rooms/{room.Id}/free-slots?date={todayText}");
+        var todaySearch = await client.GetFromJsonAsync<AvailableRoomsResponse>($"/api/rooms?date={todayText}&startTime=14:00&endTime=15:30");
+        using var rejected = await client.PostAsJsonAsync("/api/bookings", todayRequest);
+        var error = await rejected.Content.ReadFromJsonAsync<ApiError>();
+        await using var db = CreateDbContext();
+        var countAfterRejection = await db.Bookings.CountAsync(booking => booking.RoomId == room.Id);
+        using var created = await client.PostAsJsonAsync("/api/bookings", tomorrowRequest);
+        var booking = await created.Content.ReadFromJsonAsync<BookingResponse>();
+        var tomorrowSlots = await client.GetFromJsonAsync<RoomFreeSlotsResponse>($"/api/rooms/{room.Id}/free-slots?date={tomorrowText}");
+        var saved = await db.Bookings.AsNoTracking().Where(item => item.RoomId == room.Id).ToListAsync();
+
+        Assert.Equal([new FreeSlotResponse("09:00", "18:00")], todaySlots!.FreeSlots);
+        Assert.Contains(todaySearch!.Rooms, item => item.Id == room.Id);
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        Assert.Equal("VALIDATION_ERROR", error!.Code);
+        Assert.Equal(0, countAfterRejection);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Equal(tomorrowText, booking!.Date);
+        Assert.Equal([new FreeSlotResponse("09:00", "14:00"), new FreeSlotResponse("15:30", "18:00")], tomorrowSlots!.FreeSlots);
+        Assert.Equal(tomorrow, Assert.Single(saved).Date);
+        Assert.Equal(booking.Id, saved[0].Id);
+    }
+
+    [Fact]
     public async Task StartTimeIsCheckedAgainAfterDatabaseReads()
     {
         var localDay = DateTime.Today;
