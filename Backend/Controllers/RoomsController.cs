@@ -1,3 +1,5 @@
+using System.Globalization;
+using CampusFlow.Api.Middleware;
 using CampusFlow.Api.Contracts;
 using CampusFlow.Api.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -20,7 +22,10 @@ public sealed class RoomsController(RoomService rooms) : ControllerBase
         var found = await rooms.GetRoomsAsync(query, cancellationToken);
         if (query.Date is null)
             return Ok(found);
-        return Ok(await rooms.GetAvailabilityAsync(found, query.Date, query.StartTime, query.EndTime, cancellationToken));
+        var time = (ServerTimeSnapshot)HttpContext.Items[typeof(ServerTimeSnapshot)]!;
+        var duration = query.MinDuration is null ? (int?)null : int.Parse(query.MinDuration, CultureInfo.InvariantCulture);
+        return Ok(await rooms.GetAvailabilityAsync(found, query.Date, query.StartTime, query.EndTime, duration,
+            time.ServerTime, time.UtcOffset, cancellationToken));
     }
 
     [HttpGet("{id}")]
@@ -42,7 +47,9 @@ public sealed class RoomsController(RoomService rooms) : ControllerBase
         var room = await rooms.GetRoomAsync(id, cancellationToken);
         if (room is null)
             return NotFound(new ApiError("ROOM_NOT_FOUND", "Аудитория не найдена", new { roomId = id }));
-        var result = await rooms.GetAvailabilityAsync([room], query.Date!, null, null, cancellationToken);
-        return Ok(new RoomFreeSlotsResponse(id, result.Date, result.Rooms[0].FreeSlots));
+        var time = (ServerTimeSnapshot)HttpContext.Items[typeof(ServerTimeSnapshot)]!;
+        var result = await rooms.GetAvailabilityAsync([room], query.Date!, null, null, null,
+            time.ServerTime, time.UtcOffset, cancellationToken);
+        return Ok(new RoomFreeSlotsResponse(id, result.Date, result.Rooms[0].FreeSlots, time.ServerTime, time.UtcOffset));
     }
 }

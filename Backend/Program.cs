@@ -1,3 +1,4 @@
+using CampusFlow.Api.Middleware;
 using CampusFlow.Api.Data;
 using System.Text;
 using CampusFlow.Api.Configuration;
@@ -77,7 +78,8 @@ builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration>((options, c
     options.AddDefaultPolicy(policy =>
     {
         if (allowedOrigins.Length > 0)
-            policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod();
+            policy.WithOrigins(allowedOrigins).AllowCredentials().AllowAnyHeader().AllowAnyMethod()
+                .WithExposedHeaders("X-Server-Time", "X-Server-Utc-Offset");
     });
 });
 builder.Services.AddSwaggerGen(options =>
@@ -90,6 +92,7 @@ builder.Services.AddSwaggerGen(options =>
     options.OperationFilter<RoomSearchOperationFilter>();
     options.OperationFilter<AdminBookingsOperationFilter>();
     options.OperationFilter<AuthorizationOperationFilter>();
+    options.OperationFilter<ServerTimeOperationFilter>();
     options.SchemaFilter<BookingRequestSchemaFilter>();
 });
 builder.Services.AddDbContext<CampusFlowDbContext>(options => options.UseNpgsql(
@@ -109,6 +112,7 @@ if (seedRequested)
 
 app.UseSwagger();
 app.UseSwaggerUI(options => options.SwaggerEndpoint("/swagger/v1/swagger.json", "CampusFlow API v1"));
+app.UseMiddleware<ServerTimeMiddleware>();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();

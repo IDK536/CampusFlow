@@ -64,6 +64,11 @@ public sealed class RoomService(CampusFlowDbContext db)
             var capacity = int.Parse(filter.MinCapacity, CultureInfo.InvariantCulture);
             query = query.Where(room => room.Capacity >= capacity);
         }
+        if (filter.Floor is not null)
+        {
+            var floor = int.Parse(filter.Floor, CultureInfo.InvariantCulture);
+            query = query.Where(room => room.Floor == floor);
+        }
         var equipment = filter.GetEquipment();
         if (equipment.Length > 0)
             query = query.Where(room => equipment.All(item => room.Equipment.Contains(item)));
@@ -78,7 +83,7 @@ public sealed class RoomService(CampusFlowDbContext db)
         .SingleOrDefaultAsync(cancellationToken);
 
     public async Task<AvailableRoomsResponse> GetAvailabilityAsync(RoomResponse[] rooms, string dateText,
-        string? startTime, string? endTime, CancellationToken cancellationToken)
+        string? startTime, string? endTime, int? minDuration, DateTime serverTime, int utcOffset, CancellationToken cancellationToken)
     {
         var date = DateOnly.ParseExact(dateText, "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var roomIds = rooms.Select(room => room.Id).ToArray();
@@ -95,13 +100,22 @@ public sealed class RoomService(CampusFlowDbContext db)
         {
             var intervals = byRoom[room.Id].Select(booking => (Start: booking.StartTime, End: booking.EndTime));
             var free = CalculateFreeSlots(intervals);
-            if (requestedStart.HasValue && !free.Any(slot => slot.Start <= requestedStart.Value && slot.End >= requestedEnd!.Value))
+            if (minDuration.HasValue)
+            {
+                free = free.Select(slot => (Start: slot.Start < requestedStart!.Value ? requestedStart.Value : slot.Start,
+                        End: slot.End > requestedEnd!.Value ? requestedEnd.Value : slot.End))
+                    .Where(slot => slot.End > slot.Start && (slot.End - slot.Start).TotalMinutes >= minDuration.Value)
+                    .ToList();
+                if (free.Count == 0)
+                    continue;
+            }
+            else if (requestedStart.HasValue && !free.Any(slot => slot.Start <= requestedStart.Value && slot.End >= requestedEnd!.Value))
                 continue;
             var slots = free.Select(slot => new FreeSlotResponse(slot.Start.ToString("HH:mm", CultureInfo.InvariantCulture),
                 slot.End.ToString("HH:mm", CultureInfo.InvariantCulture))).ToArray();
             result.Add(new AvailableRoomResponse(room.Id, room.Name, room.Building, room.Floor, room.Capacity, room.Equipment, slots));
         }
-        return new AvailableRoomsResponse(dateText, result.ToArray());
+        return new AvailableRoomsResponse(dateText, result.ToArray(), serverTime, utcOffset);
     }
 
     private static List<(TimeOnly Start, TimeOnly End)> CalculateFreeSlots(IEnumerable<(TimeOnly Start, TimeOnly End)> bookings)

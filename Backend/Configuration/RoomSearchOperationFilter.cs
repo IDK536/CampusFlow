@@ -13,7 +13,7 @@ public sealed class RoomSearchOperationFilter : IOperationFilter
             return;
         foreach (var parameter in (operation.Parameters ?? []).OfType<OpenApiParameter>())
         {
-            if (parameter.Name == "minCapacity")
+            if (parameter.Name is "minCapacity" or "floor" or "minDuration")
                 parameter.Schema = new OpenApiSchema { Type = JsonSchemaType.Integer, Format = "int32" };
             if (parameter.Name == "date")
                 parameter.Schema = new OpenApiSchema { Type = JsonSchemaType.String, Format = "date", Pattern = @"^\d{4}-\d{2}-\d{2}$" };
@@ -22,7 +22,7 @@ public sealed class RoomSearchOperationFilter : IOperationFilter
         }
         if (context.ApiDescription.RelativePath != "api/rooms")
             return;
-        operation.Description = "Без date возвращает массив Room. С date возвращает {date, rooms} со свободными интервалами. startTime и endTime передаются вместе с date и отбирают аудитории, свободные на весь интервал.";
+        operation.Description = "Без date возвращает массив Room. С date возвращает {date, serverTime, utcOffset, rooms} со свободными интервалами. serverTime — UTC, utcOffset — смещение сервера в минутах. floor — точный этаж >= 1. startTime и endTime передаются вместе с date и отбирают аудитории, свободные на весь интервал. С minDuration (минуты >= 30, кратные 30) ищет непрерывное окно внутри интервала и возвращает подходящие окна, обрезанные по его границам. Прошедшие часы не исключаются.";
         var schema = new OpenApiSchema
         {
             OneOf =

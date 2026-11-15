@@ -18,6 +18,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
 
@@ -28,6 +29,7 @@ public sealed class RoomTests : IAsyncLifetime
     private readonly string suffix = Guid.NewGuid().ToString("N");
     private readonly DateOnly date = DateOnly.FromDateTime(DateTime.Now).AddDays(1);
     private readonly QueryCounter counter = new();
+    private readonly TestClock clock = new();
     private readonly string signingKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
     private string connection = null!;
     private WebApplicationFactory<Program> factory = null!;
@@ -70,9 +72,15 @@ public sealed class RoomTests : IAsyncLifetime
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:CampusFlow"] = connection,
+                ["Auth:AllowedOrigins:0"] = "http://localhost:5173",
                 ["Jwt:Key"] = signingKey, ["Jwt:Issuer"] = "CampusFlow", ["Jwt:Audience"] = "CampusFlowClient"
             }));
-            builder.ConfigureServices(services => services.AddDbContext<CampusFlowDbContext>((_, options) => options.AddInterceptors(counter)));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(clock);
+                services.AddDbContext<CampusFlowDbContext>((_, options) => options.AddInterceptors(counter));
+            });
         });
         client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = false });
         using var login = await client.PostAsJsonAsync("/api/auth/login", new { login = user.Login, password = "password" });
@@ -123,6 +131,8 @@ public sealed class RoomTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("?floor=2", 1)]
+    [InlineData("?floor=1&building=A&minCapacity=30&equipment=projector", 0)]
     [InlineData("?building=A", 0, 1, 3)]
     [InlineData("?minCapacity=40", 1, 3)]
     [InlineData("?equipment=whiteboard", 0, 2, 3)]
@@ -171,6 +181,83 @@ public sealed class RoomTests : IAsyncLifetime
         Assert.DoesNotContain(result.Rooms, room => room.Id == rooms[1].Id || room.Id == rooms[2].Id);
     }
 
+    [Theory]
+    [InlineData("10:00", "15:00", 90, true)]
+    [InlineData("10:00", "15:00", 120, false)]
+    [InlineData("11:00", "14:30", 60, true)]
+    [InlineData("11:30", "14:30", 60, false)]
+    [InlineData("12:00", "14:00", 30, false)]
+    [InlineData("09:00", "18:00", 540, false)]
+    public async Task DurationSearchRequiresOneContinuousWindow(string start, string end, int duration, bool fits)
+    {
+        var path = $"/api/rooms?date={DateText}&startTime={start}&endTime={end}&minDuration={duration}";
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+
+        Assert.Equal(fits, result!.Rooms.Any(room => room.Id == rooms[0].Id));
+        Assert.Contains(result.Rooms, room => room.Id == rooms[1].Id);
+        Assert.DoesNotContain(result.Rooms, room => room.Id == rooms[2].Id);
+        Assert.All(result.Rooms.SelectMany(room => room.FreeSlots), slot =>
+        {
+            Assert.True(TimeOnly.Parse(slot.StartTime) >= TimeOnly.Parse(start));
+            Assert.True(TimeOnly.Parse(slot.EndTime) <= TimeOnly.Parse(end));
+            Assert.True((TimeOnly.Parse(slot.EndTime) - TimeOnly.Parse(slot.StartTime)).TotalMinutes >= duration);
+        });
+    }
+
+    [Fact]
+    public async Task DurationSearchClipsWindowsAndCombinesRoomFilters()
+    {
+        var path = $"/api/rooms?date={DateText}&building=A&floor=1&minCapacity=30&equipment=projector,whiteboard&startTime=11:00&endTime=14:30&minDuration=30";
+        var ownIds = rooms.Select(room => room.Id).ToArray();
+
+        var result = await client.GetFromJsonAsync<AvailableRoomsResponse>(path);
+
+        var room = Assert.Single(result!.Rooms, room => ownIds.Contains(room.Id));
+        Assert.Equal(rooms[0].Id, room.Id);
+        Assert.Equal([new FreeSlotResponse("11:00", "12:00"), new FreeSlotResponse("14:00", "14:30")], room.FreeSlots);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AvailabilityBodyAndHeadersUseTheSameServerTime(bool individualRoom)
+    {
+        var path = individualRoom ? $"/api/rooms/{rooms[1].Id}/free-slots?date={DateText}"
+            : $"/api/rooms?date={DateText}";
+
+        using var response = await client.GetAsync(path);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var headerTime = DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(clock.GetUtcNow(), headerTime);
+        Assert.Equal(clock.GetUtcNow().UtcDateTime, body.RootElement.GetProperty("serverTime").GetDateTime());
+        Assert.Equal(DateTimeKind.Utc, body.RootElement.GetProperty("serverTime").GetDateTime().Kind);
+        Assert.Equal("330", response.Headers.GetValues("X-Server-Utc-Offset").Single());
+        Assert.Equal(330, body.RootElement.GetProperty("utcOffset").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("/api/rooms", 200)]
+    [InlineData("/api/rooms?floor=0", 400)]
+    [InlineData("/api/rooms/0", 404)]
+    [InlineData("/api/admin/rooms/unknown", 404)]
+    public async Task ServerTimeHeadersAreAvailableAcrossApiResponses(string path, int status)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("Origin", "http://localhost:5173");
+
+        using var response = await client.SendAsync(request);
+        var exposed = string.Join(",", response.Headers.GetValues("Access-Control-Expose-Headers"));
+
+        Assert.Equal(status, (int)response.StatusCode);
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture));
+        Assert.Equal("330", response.Headers.GetValues("X-Server-Utc-Offset").Single());
+        Assert.Contains("X-Server-Time", exposed);
+        Assert.Contains("X-Server-Utc-Offset", exposed);
+    }
+
     [Fact]
     public async Task AdjacentBookingsMergeIntoOneOccupiedInterval()
     {
@@ -201,6 +288,25 @@ public sealed class RoomTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("floor=0")]
+    [InlineData("floor=-1")]
+    [InlineData("floor=1.5")]
+    [InlineData("floor=abc")]
+    [InlineData("floor=")]
+    [InlineData("floor=2147483648")]
+    [InlineData("minDuration=60")]
+    [InlineData("date=2035-01-01&minDuration=60")]
+    [InlineData("startTime=12:00&endTime=16:00&minDuration=60")]
+    [InlineData("date=2035-01-01&startTime=12:00&minDuration=60")]
+    [InlineData("date=2035-01-01&endTime=16:00&minDuration=60")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=0")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=-30")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=45")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=270")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=60.0")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=abc")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=")]
+    [InlineData("date=2035-01-01&startTime=12:00&endTime=16:00&minDuration=2147483648")]
     [InlineData("building=Z")]
     [InlineData("building=a")]
     [InlineData("building=")]
@@ -285,6 +391,7 @@ public sealed class RoomTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal("UNAUTHORIZED", error!.Code);
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(response.Headers.GetValues("X-Server-Time").Single(), CultureInfo.InvariantCulture));
     }
 
     [Fact]
@@ -301,6 +408,13 @@ public sealed class RoomTests : IAsyncLifetime
             .GetProperty("security")[0].TryGetProperty("Bearer", out _));
         Assert.Equal("bearer", schema.RootElement.GetProperty("components").GetProperty("securitySchemes")
             .GetProperty("Bearer").GetProperty("scheme").GetString());
+        var search = schema.RootElement.GetProperty("paths").GetProperty("/api/rooms").GetProperty("get");
+        Assert.Contains(search.GetProperty("parameters").EnumerateArray(), parameter =>
+            parameter.GetProperty("name").GetString() == "minDuration" && parameter.GetProperty("schema").GetProperty("type").GetString() == "integer");
+        Assert.Contains(search.GetProperty("parameters").EnumerateArray(), parameter =>
+            parameter.GetProperty("name").GetString() == "floor" && parameter.GetProperty("schema").GetProperty("type").GetString() == "integer");
+        Assert.True(search.GetProperty("responses").GetProperty("200").GetProperty("headers").TryGetProperty("X-Server-Time", out _));
+        Assert.True(search.GetProperty("responses").GetProperty("400").GetProperty("headers").TryGetProperty("X-Server-Utc-Offset", out _));
     }
 
     [Fact]
@@ -747,6 +861,13 @@ public sealed class RoomTests : IAsyncLifetime
     }
 
     private CampusFlowDbContext CreateDbContext() => new(new DbContextOptionsBuilder<CampusFlowDbContext>().UseNpgsql(connection).Options);
+
+    private sealed class TestClock : TimeProvider
+    {
+        private readonly DateTimeOffset now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => now;
+        public override TimeZoneInfo LocalTimeZone { get; } = TimeZoneInfo.CreateCustomTimeZone("RoomTests", TimeSpan.FromMinutes(330), "RoomTests", "RoomTests");
+    }
 
     private sealed class QueryCounter : DbCommandInterceptor
     {
