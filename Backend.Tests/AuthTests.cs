@@ -52,6 +52,7 @@ public sealed class AuthTests : IAsyncLifetime
             {
                 ["ConnectionStrings:CampusFlow"] = connection,
                 ["Jwt:Key"] = signingKey, ["Jwt:Issuer"] = "CampusFlow", ["Jwt:Audience"] = "CampusFlowClient",
+                ["Auth:CookieSecure"] = "true",
                 ["Jwt:AccessTokenMinutes"] = "60", ["Jwt:RefreshTokenDays"] = "7"
             }));
             builder.ConfigureServices(services =>
@@ -285,6 +286,78 @@ public sealed class AuthTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Unauthorized, expiredResponse.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, invalid.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, forgedResponse.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CookieConfigurationSupportsLoginRefreshAndLogout(bool secure)
+    {
+        await using var configured = factory.WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Auth:CookieSecure"] = secure.ToString() })));
+        using var browser = configured.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri(secure ? "https://localhost" : "http://localhost"), HandleCookies = true
+        });
+
+        using var initial = await browser.PostAsJsonAsync("/api/auth/login", new { login, password = Password });
+        var initialCookie = initial.Headers.GetValues("Set-Cookie").Single();
+        using var refreshed = await browser.PostAsync("/api/auth/refresh", null);
+        var refreshCookie = refreshed.Headers.GetValues("Set-Cookie").Single();
+        using var logout = await browser.PostAsync("/api/auth/logout", null);
+        var deletedCookie = logout.Headers.GetValues("Set-Cookie").Single();
+        using var rejected = await browser.PostAsync("/api/auth/refresh", null);
+
+        Assert.Equal(HttpStatusCode.OK, initial.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+        Assert.NotEqual(Cookie(initial), Cookie(refreshed));
+        Assert.All(new[] { initialCookie, refreshCookie, deletedCookie }, cookie =>
+        {
+            Assert.Equal(secure, cookie.Contains("; secure", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("httponly", cookie.ToLowerInvariant());
+            Assert.Contains("samesite=lax", cookie.ToLowerInvariant());
+            Assert.Contains("path=/api/auth", cookie);
+        });
+    }
+
+    [Theory]
+    [InlineData("http://localhost:3000", true)]
+    [InlineData("http://localhost:5173", true)]
+    [InlineData("http://untrusted.example", false)]
+    public async Task ExplicitOriginsWorkBehindHttpProxy(string origin, bool allowed)
+    {
+        await using var configured = factory.WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Auth:CookieSecure"] = "false", ["Auth:AllowedOrigins:0"] = "http://localhost:3000",
+                ["Auth:AllowedOrigins:1"] = "http://localhost:5173"
+            })));
+        using var browser = configured.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://backend:8080"), HandleCookies = true
+        });
+        browser.DefaultRequestHeaders.Add("Origin", origin);
+
+        using var initial = await browser.PostAsJsonAsync("/api/auth/login", new { login, password = Password });
+        using var refreshed = await browser.PostAsync("/api/auth/refresh", null);
+        using var logout = await browser.PostAsync("/api/auth/logout", null);
+        using var preflight = new HttpRequestMessage(HttpMethod.Options, "/api/rooms");
+        preflight.Headers.Add("Access-Control-Request-Method", "GET");
+        preflight.Headers.Add("Access-Control-Request-Headers", "authorization");
+        using var cors = await browser.SendAsync(preflight);
+
+        Assert.Equal(allowed ? HttpStatusCode.OK : HttpStatusCode.Forbidden, initial.StatusCode);
+        Assert.Equal(allowed ? HttpStatusCode.OK : HttpStatusCode.Forbidden, refreshed.StatusCode);
+        Assert.Equal(allowed ? HttpStatusCode.NoContent : HttpStatusCode.Forbidden, logout.StatusCode);
+        if (allowed)
+        {
+            Assert.Equal(origin, cors.Headers.GetValues("Access-Control-Allow-Origin").Single());
+            Assert.Equal("true", cors.Headers.GetValues("Access-Control-Allow-Credentials").Single());
+        }
+        else
+            Assert.False(cors.Headers.Contains("Access-Control-Allow-Origin"));
     }
 
     private Task<HttpResponseMessage> LoginAsync() => client.PostAsJsonAsync("/api/auth/login", new { login, password = Password });
