@@ -8,6 +8,8 @@ x-backend: &backend
     ConnectionStrings__CampusFlow: "Host=db;Port=5432;Database=campusflow;Username=campusflow;Password=campusflow-local-db"
     Auth__AllowedOrigins__3: "http://localhost:3008"
     Auth__AllowedOrigins__4: "http://127.0.0.1:3008"
+    Auth__AllowedOrigins__5: "http://94.41.18.199:3008"
+    Auth__AllowedOrigins__6: "http://192.168.0.80:3008"
 
 services:
   db:
@@ -48,7 +50,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "127.0.0.1:3008:80"
+      - "3008:80"
 
 volumes:
   postgres_data:
